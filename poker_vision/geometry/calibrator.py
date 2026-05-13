@@ -14,18 +14,16 @@ class TableCalibrator:
         self.H: Optional[np.ndarray] = None
         self.H_inv: Optional[np.ndarray] = None
         self.median_error: float = -1.0
+        self.inlier_mask: Optional[np.ndarray] = None
 
     def calibrate_from_fiducials(
-        self,
-        image_points: Dict[str, Tuple[float, float]],
-        canonical_points: Dict[str, Tuple[float, float]],
+        self, image_points: Dict[str, Tuple[float, float]], canonical_points: Dict[str, Tuple[float, float]]
     ) -> bool:
         """
         Calcula a matriz de homografia recebendo os pontos clicados no vídeo
         e os respectivos pontos na mesa ideal.
         """
-        # Verifica se temos pelo menos 4 pontos em comum
-        common_keys = set(image_points.keys()).intersection(set(canonical_points.keys()))
+        common_keys = sorted(set(image_points.keys()) & set(canonical_points.keys()))
         if len(common_keys) < 4:
             return False
 
@@ -36,15 +34,22 @@ class TableCalibrator:
         src_pts = np.array(img_pts_list, dtype=np.float32).reshape(-1, 1, 2)
         dst_pts = np.array(can_pts_list, dtype=np.float32).reshape(-1, 1, 2)
 
-        # Calcula a matriz H usando RANSAC (robusto a pequenos erros de clique)
-        h_matrix, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+        # Capturando a máscara de inliers do RANSAC
+        h_matrix, inlier_mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
 
         if h_matrix is None:
             return False
 
         self.H = h_matrix
-        # Calcula a matriz inversa (para voltar do canônico para a imagem)
-        self.H_inv = np.linalg.inv(self.H)
+        self.inlier_mask = inlier_mask
+
+        # Proteção contra matriz singular (impossível de inverter)
+        try:
+            self.H_inv = np.linalg.inv(self.H)
+        except np.linalg.LinAlgError:
+            self.H = None
+            self.inlier_mask = None
+            return False
 
         # Calcula o erro de reprojeção
         self._calculate_reprojection_error(src_pts, dst_pts)
@@ -72,16 +77,22 @@ class TableCalibrator:
     def warp_frame(self, frame: np.ndarray, output_size: Tuple[int, int]) -> np.ndarray:
         """Pega o frame do vídeo e "estica" ele para ficar na visão de cima (bird's-eye view)."""
         if self.H is None:
-            return frame
+            raise RuntimeError("Calibrador ainda não foi calibrado.")
         return cv2.warpPerspective(frame, self.H, output_size)
 
     def _calculate_reprojection_error(self, src_pts: np.ndarray, dst_pts: np.ndarray) -> None:
-        """Calcula o quão preciso foi o clique do usuário."""
+        """Calcula o quão preciso foi o clique do usuário usando apenas os inliers."""
         if self.H is None:
             return
 
         projected_pts = cv2.perspectiveTransform(src_pts, self.H)
 
-        # Calcula a distância (erro) entre o ponto projetado e onde ele deveria estar
-        errors = np.linalg.norm(projected_pts - dst_pts, axis=2)
+        # Calcula a distância (erro) de todos os pontos
+        errors = np.linalg.norm(projected_pts - dst_pts, axis=2).ravel()
+
+        if self.inlier_mask is not None:
+            mask = self.inlier_mask.ravel().astype(bool)
+            if np.any(mask):
+                errors = errors[mask]
+
         self.median_error = float(np.median(errors))
