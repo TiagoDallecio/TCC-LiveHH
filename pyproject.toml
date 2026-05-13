@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "Poker-LiveHH"
+version = "0.1.0"
+description = "Poker Hand History CV Pipeline"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "opencv-python",
+    "numpy",
+    "shapely",
+    "pydantic>=2.0",
+    "pyyaml",
+    "ultralytics",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "black",
+    "mypy"
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[tool.setuptools.packages.find]
+include = ["poker_vision*"]

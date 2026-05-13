@@ -1,0 +1,4 @@
+video_source: "videos/sample_hand.mp4"
+model_paths:
+  cards: "models/card_yolov8s.pt"
+  chips: "models/chip_seg.pt"

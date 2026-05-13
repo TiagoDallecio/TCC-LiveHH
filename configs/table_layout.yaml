@@ -1,0 +1,8 @@
+canonical_size: [1000, 600]
+blinds: [1.0, 2.0]
+currency: "BRL"
+rois:
+  - name: "pot_main"
+    polygon: [[400, 250], [600, 250], [600, 350], [400, 350]]
+  - name: "seat_1_stack"
+    polygon: [[100, 100], [200, 100], [200, 200], [100, 200]]
