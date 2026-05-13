@@ -20,6 +20,12 @@ def main() -> None:
     # Novo comando: 'run'
     subparsers.add_parser("run", help="Inicia o processamento do pipeline")
 
+    # Novo comando: 'layout'
+    layout_parser = subparsers.add_parser(
+        "layout", help="Ferramentas de geometria da mesa"
+    )
+    layout_parser.add_argument("action", choices=["render"], help="Ação a executar")
+
     args = parser.parse_args()
 
     if len(sys.argv) == 1:
@@ -40,6 +46,11 @@ def main() -> None:
             # Mandando uma mensagem genérica de log
             logger = logging.getLogger("poker_vision")
             logger.info("Iniciando carregamento de frames... (Stub)")
+
+        elif args.command == "layout" and args.action == "render":
+            from poker_vision.layout import render_layout
+
+            render_layout(config)
 
     except Exception as e:
         print(f"Falha crítica: {e}", file=sys.stderr)
