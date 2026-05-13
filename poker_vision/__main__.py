@@ -7,9 +7,7 @@ from poker_vision.run_manager import setup_run_directory
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        prog="poker_vision", description="Poker Hand History CV Pipeline - CLI"
-    )
+    parser = argparse.ArgumentParser(prog="poker_vision", description="Poker Hand History CV Pipeline - CLI")
 
     subparsers = parser.add_subparsers(dest="command")
 
@@ -21,9 +19,7 @@ def main() -> None:
     subparsers.add_parser("run", help="Inicia o processamento do pipeline")
 
     # Novo comando: 'layout'
-    layout_parser = subparsers.add_parser(
-        "layout", help="Ferramentas de geometria da mesa"
-    )
+    layout_parser = subparsers.add_parser("layout", help="Ferramentas de geometria da mesa")
     layout_parser.add_argument("action", choices=["render"], help="Ação a executar")
 
     args = parser.parse_args()
