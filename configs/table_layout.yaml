@@ -3,6 +3,23 @@ blinds: [1.0, 2.0]
 currency: "BRL"
 rois:
   - name: "pot_main"
-    polygon: [[400, 250], [600, 250], [600, 350], [400, 350]]
+    polygon: [[400, 150], [600, 150], [600, 220], [400, 220]]
+  - name: "board"
+    polygon: [[300, 250], [700, 250], [700, 350], [300, 350]]
+  - name: "muck"
+    polygon: [[450, 380], [550, 380], [550, 450], [450, 450]]
+  # Assento 1 (Canto Inferior Esquerdo)
   - name: "seat_1_stack"
-    polygon: [[100, 100], [200, 100], [200, 200], [100, 200]]
+    polygon: [[50, 400], [200, 400], [200, 550], [50, 550]]
+  - name: "seat_1_bet"
+    polygon: [[220, 380], [320, 380], [320, 480], [220, 480]]
+  # Assento 2 (Esquerda Meio)
+  - name: "seat_2_stack"
+    polygon: [[50, 200], [150, 200], [150, 350], [50, 350]]
+  - name: "seat_2_bet"
+    polygon: [[170, 220], [270, 220], [270, 320], [170, 320]]
+  # Assento 9 (Canto Inferior Direito)
+  - name: "seat_9_stack"
+    polygon: [[800, 400], [950, 400], [950, 550], [800, 550]]
+  - name: "seat_9_bet"
+    polygon: [[680, 380], [780, 380], [780, 480], [680, 480]]
