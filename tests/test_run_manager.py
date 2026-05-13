@@ -9,12 +9,8 @@ def test_setup_run_directory_creates_structure_and_logs(tmp_path: Path) -> None:
     """Garante que a estrutura de pastas e os logs em formato JSON funcionam."""
     # 1. Configuração fictícia para o teste
     mock_config = AppConfig(
-        pipeline=PipelineConfig(
-            video_source="test.mp4", model_paths=ModelPaths(cards="c.pt", chips="ch.pt")
-        ),
-        layout=TableLayoutConfig(
-            canonical_size=(1000, 600), blinds=(1.0, 2.0), currency="BRL", rois=[]
-        ),
+        pipeline=PipelineConfig(video_source="test.mp4", model_paths=ModelPaths(cards="c.pt", chips="ch.pt")),
+        layout=TableLayoutConfig(canonical_size=(1000, 600), blinds=(1.0, 2.0), currency="BRL", rois=[]),
     )
 
     # Usamos o tmp_path do pytest para não sujar a nossa pasta raiz de projeto

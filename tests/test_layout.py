@@ -18,12 +18,8 @@ def test_no_overlapping_rois() -> None:
 
             # O interior das zonas não pode se sobrepor
             # (Elas podem apenas tocar as bordas, mas aqui nem isso devem fazer)
-            assert not poly_a.overlaps(
-                poly_b
-            ), f"Erro crítico: {name_a} se sobrepõe com {name_b}!"
-            assert not poly_a.within(
-                poly_b
-            ), f"Erro crítico: {name_a} está dentro de {name_b}!"
+            assert not poly_a.overlaps(poly_b), f"Erro crítico: {name_a} se sobrepõe com {name_b}!"
+            assert not poly_a.within(poly_b), f"Erro crítico: {name_a} está dentro de {name_b}!"
 
 
 def test_seats_have_stack_and_bet_zones() -> None:
@@ -41,7 +37,5 @@ def test_seats_have_stack_and_bet_zones() -> None:
 
     # Verifica se existe o par (stack e bet) para cada assento encontrado
     for seat in seats_found:
-        assert (
-            f"seat_{seat}_stack" in roi_names
-        ), f"Assento {seat} não tem zona de stack!"
+        assert f"seat_{seat}_stack" in roi_names, f"Assento {seat} não tem zona de stack!"
         assert f"seat_{seat}_bet" in roi_names, f"Assento {seat} não tem zona de bet!"
