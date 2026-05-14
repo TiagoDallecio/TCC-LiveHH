@@ -2,24 +2,18 @@ canonical_size: [1000, 600]
 blinds: [1.0, 2.0]
 currency: "BRL"
 rois:
-  - name: "pot_main"
-    polygon: [[400, 150], [600, 150], [600, 220], [400, 220]]
+  # 1. A Área do Pote (Fundo da tela, perto do dealer)
+  - name: "pot"
+    polygon: [[400, 50], [600, 50], [600, 150], [400, 150]]
+
+  # 2. As Cartas Comunitárias (Centro exato da tela)
   - name: "board"
-    polygon: [[300, 250], [700, 250], [700, 350], [300, 350]]
-  - name: "muck"
-    polygon: [[450, 380], [550, 380], [550, 450], [450, 450]]
-  # Assento 1 (Canto Inferior Esquerdo)
-  - name: "seat_1_stack"
-    polygon: [[50, 400], [200, 400], [200, 550], [50, 550]]
-  - name: "seat_1_bet"
-    polygon: [[220, 380], [320, 380], [320, 480], [220, 480]]
-  # Assento 2 (Esquerda Meio)
-  - name: "seat_2_stack"
-    polygon: [[50, 200], [150, 200], [150, 350], [50, 350]]
-  - name: "seat_2_bet"
-    polygon: [[170, 220], [270, 220], [270, 320], [170, 320]]
-  # Assento 9 (Canto Inferior Direito)
-  - name: "seat_9_stack"
-    polygon: [[800, 400], [950, 400], [950, 550], [800, 550]]
-  - name: "seat_9_bet"
-    polygon: [[680, 380], [780, 380], [780, 480], [680, 480]]
+    polygon: [[250, 200], [750, 200], [750, 300], [250, 300]]
+
+  # 3. Suas Apostas (Entre as suas cartas e o board)
+  - name: "hero_bet_area"
+    polygon: [[350, 350], [650, 350], [650, 450], [350, 450]]
+
+  # 4. Suas Cartas (Base da tela, colado no celular)
+  - name: "hero_hole_cards"
+    polygon: [[400, 500], [600, 500], [600, 600], [400, 600]]
