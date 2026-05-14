@@ -12,13 +12,12 @@ def render_layout(config: AppConfig, output_path: str = "layout_preview.png") ->
     img = np.zeros((height, width, 3), dtype=np.uint8)
     img[:] = (50, 100, 50)  # Cor BGR
 
-    # Cores fixas para cada tipo de zona (BGR)
+    # Cores fixas para cada tipo de zona do POV (BGR)
     colors = {
-        "pot": (0, 255, 255),  # Amarelo
-        "board": (255, 255, 0),  # Ciano
-        "muck": (0, 0, 255),  # Vermelho
-        "stack": (255, 100, 100),  # Azul claro
-        "bet": (100, 255, 100),  # Verde claro
+        "pot": (0, 255, 255),  # Amarelo (Fundo da mesa)
+        "board": (255, 255, 0),  # Ciano (Centro)
+        "hero_bet_area": (100, 255, 100),  # Verde claro (Apostas)
+        "hero_hole_cards": (200, 100, 255),  # Rosa/Roxo (Suas cartas, base da tela)
     }
 
     for roi in config.layout.rois:
