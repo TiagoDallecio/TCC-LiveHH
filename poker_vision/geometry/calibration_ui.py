@@ -13,8 +13,6 @@ from typing import Optional
 
 import cv2
 import numpy as np
-import yaml
-from pydantic import BaseModel, Field
 from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
@@ -45,6 +43,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from poker_vision.geometry.calibration_profile import CalibrationProfile, FiducialEntry
 from poker_vision.geometry.calibrator import TableCalibrator
 
 # ---------------------------------------------------------------------------
@@ -68,40 +67,6 @@ FIDUCIALS: list[tuple[str, tuple[float, float], str]] = [
 LOUPE_SIZE_PX = 160  # size of the loupe widget on screen
 LOUPE_ZOOM = 5  # magnification factor
 LOUPE_SAMPLE_PX = LOUPE_SIZE_PX // LOUPE_ZOOM  # source region size on the frame
-
-
-# ---------------------------------------------------------------------------
-# Inline Pydantic model (will move to its own module in Task 1.4)
-# ---------------------------------------------------------------------------
-
-
-class FiducialEntry(BaseModel):
-    name: str
-    canonical: tuple[float, float]
-    image: tuple[float, float]
-
-
-class CalibrationProfile(BaseModel):
-    profile_id: str
-    created_at: str
-    canonical_size: tuple[int, int]
-    fiducials: list[FiducialEntry]
-    homography: list[list[float]] = Field(..., description="3x3 homography matrix (image -> canonical)")
-    reprojection_error_median_px: float
-    source_video: Optional[str] = None
-    source_frame_index: Optional[int] = None
-
-    def save(self, path: Path) -> None:
-        path.write_text(yaml.safe_dump(self.model_dump(), sort_keys=False))
-
-    @classmethod
-    def load(cls, path: Path) -> "CalibrationProfile":
-        return cls.model_validate(yaml.safe_load(path.read_text()))
-
-
-# ---------------------------------------------------------------------------
-# Image view with click handling and loupe overlay
-# ---------------------------------------------------------------------------
 
 
 @dataclass
