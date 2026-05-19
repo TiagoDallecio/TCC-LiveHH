@@ -1,12 +1,18 @@
 import argparse
 import logging
 import sys
+import time
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from poker_vision.config import load_config
+from poker_vision.core.pipeline import Orchestrator
+
+# Novos imports da esteira e da sessão
+from poker_vision.core.session import create_initial_context
+from poker_vision.core.video_stages import DebugVisualizerStage, FrameReaderStage
 from poker_vision.geometry.calibration_profile import CalibrationProfile
 from poker_vision.geometry.calibrator import TableCalibrator
 from poker_vision.geometry.zone_assigner import draw_rois_on_frame
@@ -22,18 +28,20 @@ def main() -> None:
     config_parser = subparsers.add_parser("config", help="Gerencia as configurações")
     config_parser.add_argument("action", choices=["show"], help="Ação a executar")
 
-    # Novo comando: 'run'
-    subparsers.add_parser("run", help="Inicia o processamento do pipeline")
+    # Comando: 'run' (Atualizado para a Tarefa 2.4)
+    run_parser = subparsers.add_parser("run", help="Inicia o processamento do pipeline ponta a ponta")
+    run_parser.add_argument("video", help="Caminho para o vídeo (.mp4)")
+    run_parser.add_argument("--profile", required=True, help="Caminho para o YAML de calibração")
+    run_parser.add_argument("--skip", type=int, default=1, help="Pulo de frames (frame_skip)")
 
-    # Novo comando: 'layout'
+    # Comando: 'layout'
     layout_parser = subparsers.add_parser("layout", help="Ferramentas de geometria da mesa")
     layout_parser.add_argument("action", choices=["render"], help="Ação a executar")
 
-    # Novo comando: 'calibrate' e seus subcomandos
+    # Comando: 'calibrate' e seus subcomandos
     cal_parser = subparsers.add_parser("calibrate", help="Ferramentas de calibração")
     cal_sub = cal_parser.add_subparsers(dest="cal_command")
 
-    # Comando antigo (UI) virou 'ui' (se não passar nada, também abre a UI)
     ui_parser = cal_sub.add_parser("ui", help="Abre a interface gráfica de calibração")
     ui_parser.add_argument("video", nargs="?", default=None, help="Caminho opcional para um vídeo")
 
@@ -55,10 +63,51 @@ def main() -> None:
 
         elif args.command == "run":
             run_dir = setup_run_directory(config)
-            print(f"✅ Pipeline stub iniciado!\n📁 Diretório da execução: {run_dir}")
 
             logger = logging.getLogger("poker_vision")
-            logger.info("Iniciando carregamento de frames... (Stub)")
+            logger.info(f"Iniciando nova execução. Diretório de logs: {run_dir}")
+
+            # 1. Carrega o Perfil de Calibração (Geometria Base)
+            profile = CalibrationProfile.load(Path(args.profile))
+            calibrator = TableCalibrator()
+            calibrator.H = np.array(profile.homography, dtype=np.float32)
+            calibrator.H_inv = np.linalg.inv(calibrator.H)
+            logger.info(f"Perfil de calibração carregado: {args.profile}")
+
+            # 2. Wizard de Configuração Inicial (Interativo, usa print/input)
+            print("\n♠️ Poker Vision - Nova Sessão ♠️")
+            try:
+                num_players = int(input("Quantos jogadores na mesa? (ex: 6 ou 9): "))
+                hero_pos = input("Qual sua posição inicial? (ex: BTN, SB, BB, UTG, HJ, CO): ").upper()
+
+                create_initial_context(num_players, hero_pos)
+                logger.info(f"Contexto da mesa criado: {num_players} jogadores, Hero={hero_pos}")
+
+            except ValueError as e:
+                print(f"\n❌ Erro de configuração: {e}")
+                logger.error(f"Falha na configuração do Wizard: {e}")
+                sys.exit(1)
+
+            # 3. Iniciar o Pipeline de Vídeo
+            print("\n✅ Pipeline iniciado! Pressione 'Q' na janela do vídeo para sair.")
+            logger.info(f"Montando pipeline de vídeo para {args.video} com skip={args.skip}")
+
+            reader = FrameReaderStage(args.video, frame_skip=args.skip)
+            visualizer = DebugVisualizerStage(config, calibrator, run_dir)
+
+            orchestrator = Orchestrator([reader, visualizer])
+            orchestrator.start()
+            logger.info("Threads do pipeline iniciadas com sucesso.")
+
+            try:
+                while reader.is_alive() and visualizer.is_alive():
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                print("\n[CLI] Interrupção do usuário detectada (Ctrl+C).")
+                logger.warning("Interrupção manual (Ctrl+C) recebida.")
+            finally:
+                orchestrator.stop()
+                logger.info("Pipeline encerrado graciosamente.")
 
         elif args.command == "layout" and args.action == "render":
             from poker_vision.geometry.layout import render_layout
