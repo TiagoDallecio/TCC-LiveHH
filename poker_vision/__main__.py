@@ -9,13 +9,14 @@ import numpy as np
 
 from poker_vision.config import load_config
 from poker_vision.core.pipeline import Orchestrator
-
-# Novos imports da esteira e da sessão
 from poker_vision.core.session import create_initial_context
 from poker_vision.core.video_stages import DebugVisualizerStage, FrameReaderStage
 from poker_vision.geometry.calibration_profile import CalibrationProfile
 from poker_vision.geometry.calibrator import TableCalibrator
-from poker_vision.geometry.zone_assigner import draw_rois_on_frame
+from poker_vision.geometry.zone_assigner import ZoneAssigner, draw_rois_on_frame
+from poker_vision.inference.board_tracker_stage import BoardTrackerStage
+from poker_vision.inference.card_detector_stage import CardDetectorStage
+from poker_vision.inference.card_stabilizer_stage import CardStabilizerStage
 from poker_vision.run_manager import setup_run_directory
 
 
@@ -28,7 +29,7 @@ def main() -> None:
     config_parser = subparsers.add_parser("config", help="Gerencia as configurações")
     config_parser.add_argument("action", choices=["show"], help="Ação a executar")
 
-    # Comando: 'run' (Atualizado para a Tarefa 2.4)
+    # Comando: 'run'
     run_parser = subparsers.add_parser("run", help="Inicia o processamento do pipeline ponta a ponta")
     run_parser.add_argument("video", help="Caminho para o vídeo (.mp4)")
     run_parser.add_argument("--profile", required=True, help="Caminho para o YAML de calibração")
@@ -88,14 +89,25 @@ def main() -> None:
                 logger.error(f"Falha na configuração do Wizard: {e}")
                 sys.exit(1)
 
+            zone_assigner = ZoneAssigner(config)
+
             # 3. Iniciar o Pipeline de Vídeo
             print("\n✅ Pipeline iniciado! Pressione 'Q' na janela do vídeo para sair.")
             logger.info(f"Montando pipeline de vídeo para {args.video} com skip={args.skip}")
 
             reader = FrameReaderStage(args.video, frame_skip=args.skip)
+
+            detector = CardDetectorStage(
+                model_path=config.pipeline.model_paths.cards, calibrator=calibrator, zone_assigner=zone_assigner
+            )
+
+            stabilizer = CardStabilizerStage(min_hits=2, max_misses=5)
+
+            tracker = BoardTrackerStage()
+
             visualizer = DebugVisualizerStage(config, calibrator, run_dir)
 
-            orchestrator = Orchestrator([reader, visualizer])
+            orchestrator = Orchestrator([reader, detector, stabilizer, tracker, visualizer])
             orchestrator.start()
             logger.info("Threads do pipeline iniciadas com sucesso.")
 
