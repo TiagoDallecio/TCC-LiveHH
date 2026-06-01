@@ -17,6 +17,8 @@ from poker_vision.geometry.zone_assigner import ZoneAssigner, draw_rois_on_frame
 from poker_vision.inference.board_tracker_stage import BoardTrackerStage
 from poker_vision.inference.card_detector_stage import CardDetectorStage
 from poker_vision.inference.card_stabilizer_stage import CardStabilizerStage
+from poker_vision.inference.opponent_action_inferencer import OpponentActionInferencer
+from poker_vision.logic.hand_fsm import HandFSM
 from poker_vision.run_manager import setup_run_directory
 
 
@@ -81,8 +83,12 @@ def main() -> None:
                 num_players = int(input("Quantos jogadores na mesa? (ex: 6 ou 9): "))
                 hero_pos = input("Qual sua posição inicial? (ex: BTN, SB, BB, UTG, HJ, CO): ").upper()
 
-                create_initial_context(num_players, hero_pos)
+                ctx = create_initial_context(num_players, hero_pos)
                 logger.info(f"Contexto da mesa criado: {num_players} jogadores, Hero={hero_pos}")
+
+                inferencer = OpponentActionInferencer()
+                fsm = HandFSM(ctx, inferencer)
+                logger.info("HandFSM inicializada. Estado inicial: %s", fsm.state.value)
 
             except ValueError as e:
                 print(f"\n❌ Erro de configuração: {e}")
@@ -103,7 +109,7 @@ def main() -> None:
 
             stabilizer = CardStabilizerStage(min_hits=2, max_misses=5)
 
-            tracker = BoardTrackerStage()
+            tracker = BoardTrackerStage(on_board_change=fsm.handle_board_change)
 
             visualizer = DebugVisualizerStage(config, calibrator, run_dir)
 
