@@ -1,0 +1,369 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from decimal import Decimal
+from pathlib import Path
+from typing import Any, cast
+
+import yaml
+
+from poker_vision.inference.opponent_action_inferencer import OpponentActionInferencer, Street, TableContext
+from poker_vision.logic.events import (
+    BoardCardsRevealed,
+    CardsMucked,
+    ChipsAwarded,
+    ChipsIntoBetZone,
+    ChipsIntoPot,
+    DealerButtonMoved,
+    HoleCardsVisible,
+    NewHandDetected,
+    PlayerStackChanged,
+    VisualEvent,
+)
+from poker_vision.logic.hand_fsm import HandFSM
+from poker_vision.logic.invariants import InvariantViolationError, check_invariants
+from poker_vision.logic.models import HandState as HandSnapshot
+from poker_vision.logic.models import PlayerState
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ReplayResult:
+    scenario_name: str
+    transition_logs: list[str]
+    final_state: str
+    needs_review: bool
+
+
+def run_replay_scenario(scenario_path: str | Path) -> ReplayResult:
+    path = Path(scenario_path)
+    scenario = _load_scenario(path)
+    hand_state = _build_hand_state(scenario)
+    ctx = _build_context(scenario, hand_state)
+    fsm = HandFSM(ctx, OpponentActionInferencer())
+    fsm.set_hand_state(hand_state)
+    check_invariants(fsm.hand_state)
+
+    transition_logs: list[str] = []
+    raw_events = scenario.get("events", [])
+    if not isinstance(raw_events, list):
+        raise ValueError("Scenario field 'events' must be a list")
+
+    for index, raw_event in enumerate(raw_events, start=1):
+        history_before = list(fsm.state_history)
+        event_name = _apply_replay_event(fsm, ctx, raw_event, index)
+        history_after = fsm.state_history
+        if len(history_after) > len(history_before):
+            previous_state = history_before[-1]
+            for transitioned_state in history_after[len(history_before) :]:
+                log_line = f"{index:03d} {event_name}: {previous_state.value} -> {transitioned_state.value}"
+                transition_logs.append(log_line)
+                logger.info(log_line)
+                previous_state = transitioned_state
+        check_invariants(fsm.hand_state)
+
+    check_invariants(fsm.hand_state)
+    if fsm.hand_state.quality.needs_review:
+        raise InvariantViolationError("Scenario finished with quality.needs_review=True")
+
+    return ReplayResult(
+        scenario_name=str(scenario.get("name", path.stem)),
+        transition_logs=transition_logs,
+        final_state=fsm.state.value,
+        needs_review=fsm.hand_state.quality.needs_review,
+    )
+
+
+def _load_scenario(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as stream:
+        loaded = yaml.safe_load(stream) or {}
+    if not isinstance(loaded, dict):
+        raise ValueError("Scenario root must be a mapping")
+    return loaded
+
+
+def _build_hand_state(scenario: dict[str, Any]) -> HandSnapshot:
+    initial_state = scenario.get("initial_state", {})
+    if not isinstance(initial_state, dict):
+        raise ValueError("Scenario field 'initial_state' must be a mapping")
+
+    players_raw = initial_state.get("players", {})
+    if not isinstance(players_raw, dict):
+        raise ValueError("Scenario field 'initial_state.players' must be a mapping")
+
+    players: dict[str, PlayerState] = {}
+    for player_id, player_payload in players_raw.items():
+        if not isinstance(player_payload, dict):
+            raise ValueError(f"Player payload for '{player_id}' must be a mapping")
+        players[player_id] = PlayerState(
+            seat=int(player_payload["seat"]),
+            stack=_to_decimal(player_payload["stack"]),
+            current_bet=_to_decimal(player_payload.get("current_bet", 0)),
+            has_folded=bool(player_payload.get("has_folded", False)),
+            has_acted_this_street=bool(player_payload.get("has_acted_this_street", False)),
+            hole_cards=list(player_payload.get("hole_cards", [])),
+        )
+
+    street_value = str(initial_state.get("street", "preflop"))
+    if street_value not in {"preflop", "flop", "turn", "river"}:
+        raise ValueError(f"Unsupported street in initial_state: {street_value}")
+    street = cast(Street, street_value)
+
+    return HandSnapshot(
+        street=street,
+        board=list(initial_state.get("board", [])),
+        pot=_to_decimal(initial_state.get("pot", 0)),
+        current_bet_to_match=_to_decimal(initial_state.get("current_bet_to_match", 0)),
+        last_raiser=initial_state.get("last_raiser"),
+        action_on_seat=initial_state.get("action_on_seat"),
+        players=players,
+    )
+
+
+def _build_context(scenario: dict[str, Any], hand_state: HandSnapshot) -> TableContext:
+    table = scenario.get("table", {})
+    if not isinstance(table, dict):
+        raise ValueError("Scenario field 'table' must be a mapping")
+
+    seat_order_raw = table.get("seat_order", list(hand_state.players.keys()))
+    if not isinstance(seat_order_raw, list):
+        raise ValueError("Scenario field 'table.seat_order' must be a list")
+    seat_order = [str(player_id) for player_id in seat_order_raw]
+
+    if seat_order:
+        default_turn_pointer = seat_order[min(3, len(seat_order) - 1)]
+    else:
+        default_turn_pointer = "Hero"
+
+    active_players_raw = table.get("active_players")
+    if active_players_raw is None:
+        active_players = [player_id for player_id, player in hand_state.players.items() if not player.has_folded]
+    else:
+        if not isinstance(active_players_raw, list):
+            raise ValueError("Scenario field 'table.active_players' must be a list")
+        active_players = [str(player_id) for player_id in active_players_raw]
+
+    return TableContext(
+        num_players=int(table.get("num_players", len(seat_order))),
+        button_seat=int(table.get("button_seat", 0)),
+        hero_seat=int(table.get("hero_seat", 0)),
+        seat_order=seat_order,
+        active_players=active_players,
+        current_street=hand_state.street,
+        current_bet=hand_state.current_bet_to_match,
+        last_raise_size=_to_decimal(table.get("last_raise_size", 0)),
+        turn_pointer=str(table.get("turn_pointer", default_turn_pointer)),
+        pot=hand_state.pot,
+        contributions_this_street={
+            player_id: player.current_bet for player_id, player in hand_state.players.items() if player.current_bet > 0
+        },
+        hero_id=str(table.get("hero_id", "Hero")),
+    )
+
+
+def _apply_replay_event(fsm: HandFSM, ctx: TableContext, raw_event: Any, index: int) -> str:
+    if isinstance(raw_event, str):
+        event_type = raw_event
+        payload: dict[str, Any] = {"type": raw_event}
+    elif isinstance(raw_event, dict):
+        event_type = str(raw_event.get("type", ""))
+        payload = raw_event
+    else:
+        raise ValueError(f"Event entry at index {index} must be string or mapping")
+
+    if event_type == "SyntheticAction":
+        _apply_synthetic_action(fsm, ctx, payload)
+        return event_type
+
+    if event_type == "SyntheticStreetReset":
+        _apply_street_reset(fsm, ctx, payload)
+        return event_type
+
+    if event_type == "showdown":
+        fsm.handle("showdown")
+        return event_type
+
+    visual_event = _build_visual_event(event_type, payload, index)
+    _apply_visual_side_effects(fsm, ctx, visual_event)
+    fsm.handle(visual_event)
+    return event_type
+
+
+def _build_visual_event(event_type: str, payload: dict[str, Any], index: int) -> VisualEvent:
+    frame_idx = int(payload.get("frame_idx", index))
+    confidence = float(payload.get("confidence", 1.0))
+
+    if event_type == "NewHandDetected":
+        return NewHandDetected(frame_idx=frame_idx, confidence=confidence, dealer_seat=payload.get("dealer_seat"))
+    if event_type == "HoleCardsVisible":
+        cards = payload.get("cards")
+        if not isinstance(cards, list) or len(cards) != 2:
+            raise ValueError("HoleCardsVisible requires a two-card list in 'cards'")
+        return HoleCardsVisible(frame_idx=frame_idx, confidence=confidence, cards=(str(cards[0]), str(cards[1])))
+    if event_type == "BoardCardsRevealed":
+        cards = payload.get("cards", [])
+        if not isinstance(cards, list):
+            raise ValueError("BoardCardsRevealed requires list field 'cards'")
+        return BoardCardsRevealed(frame_idx=frame_idx, confidence=confidence, cards=[str(card) for card in cards])
+    if event_type == "CardsMucked":
+        return CardsMucked(frame_idx=frame_idx, confidence=confidence, seat=int(payload["seat"]))
+    if event_type == "ChipsAwarded":
+        return ChipsAwarded(
+            frame_idx=frame_idx,
+            confidence=confidence,
+            seat=int(payload["seat"]),
+            amount=_to_decimal(payload["amount"]),
+        )
+    if event_type == "ChipsIntoBetZone":
+        return ChipsIntoBetZone(
+            frame_idx=frame_idx,
+            confidence=confidence,
+            seat=int(payload["seat"]),
+            amount=_to_decimal(payload["amount"]),
+        )
+    if event_type == "ChipsIntoPot":
+        return ChipsIntoPot(frame_idx=frame_idx, confidence=confidence, amount=_to_decimal(payload["amount"]))
+    if event_type == "PlayerStackChanged":
+        return PlayerStackChanged(
+            frame_idx=frame_idx,
+            confidence=confidence,
+            seat=int(payload["seat"]),
+            new_stack=_to_decimal(payload["new_stack"]),
+        )
+    if event_type == "DealerButtonMoved":
+        return DealerButtonMoved(frame_idx=frame_idx, confidence=confidence, new_seat=int(payload["new_seat"]))
+
+    raise ValueError(f"Unsupported visual event type: {event_type}")
+
+
+def _apply_synthetic_action(fsm: HandFSM, ctx: TableContext, payload: dict[str, Any]) -> None:
+    player_id = str(payload["player_id"])
+    action = str(payload["action"])
+    amount = _to_decimal(payload.get("amount", 0))
+
+    if player_id not in fsm.hand_state.players:
+        raise ValueError(f"Unknown player_id in SyntheticAction: {player_id}")
+
+    player = fsm.hand_state.players[player_id]
+    player.has_acted_this_street = True
+
+    if action == "fold":
+        player.has_folded = True
+    elif action == "check":
+        pass
+    elif action in {"bet", "raise", "call", "all_in"}:
+        if action == "all_in" and "amount" not in payload:
+            amount = player.stack
+        if amount < 0:
+            raise ValueError("SyntheticAction amount cannot be negative")
+        if amount > player.stack:
+            raise ValueError(f"SyntheticAction amount exceeds stack for player '{player_id}'")
+        player.stack -= amount
+        player.current_bet += amount
+        fsm.hand_state.pot += amount
+        ctx.pot += amount
+        if player.current_bet > fsm.hand_state.current_bet_to_match:
+            fsm.hand_state.last_raiser = player_id
+    else:
+        raise ValueError(f"Unsupported synthetic action: {action}")
+
+    if "next_action_on_seat" in payload:
+        fsm.hand_state.action_on_seat = int(payload["next_action_on_seat"])
+
+    if "next_player_id" in payload:
+        ctx.turn_pointer = str(payload["next_player_id"])
+
+    _sync_current_bet(fsm.hand_state, ctx)
+    _sync_active_players(fsm.hand_state, ctx)
+
+
+def _apply_street_reset(fsm: HandFSM, ctx: TableContext, payload: dict[str, Any]) -> None:
+    for player in fsm.hand_state.players.values():
+        player.current_bet = Decimal("0")
+        player.has_acted_this_street = False
+
+    fsm.hand_state.current_bet_to_match = Decimal("0")
+    fsm.hand_state.last_raiser = None
+    ctx.current_bet = Decimal("0")
+    ctx.last_raise_size = Decimal("0")
+    ctx.contributions_this_street = {}
+
+    if "action_on_seat" in payload:
+        fsm.hand_state.action_on_seat = int(payload["action_on_seat"])
+
+    _sync_active_players(fsm.hand_state, ctx)
+
+
+def _apply_visual_side_effects(fsm: HandFSM, ctx: TableContext, event: VisualEvent) -> None:
+    if isinstance(event, BoardCardsRevealed):
+        fsm.hand_state.board = list(event.cards)
+        if len(event.cards) in (3, 4, 5):
+            _apply_street_reset(fsm, ctx, {})
+        return
+
+    if isinstance(event, CardsMucked):
+        player_id = _player_id_by_seat(fsm.hand_state, event.seat)
+        if player_id is not None:
+            fsm.hand_state.players[player_id].has_folded = True
+        _sync_active_players(fsm.hand_state, ctx)
+        return
+
+    if isinstance(event, ChipsAwarded):
+        player_id = _player_id_by_seat(fsm.hand_state, event.seat)
+        if player_id is not None:
+            fsm.hand_state.players[player_id].stack += event.amount
+        return
+
+    if isinstance(event, ChipsIntoPot):
+        fsm.hand_state.pot += event.amount
+        ctx.pot += event.amount
+        return
+
+    if isinstance(event, ChipsIntoBetZone):
+        player_id = _player_id_by_seat(fsm.hand_state, event.seat)
+        if player_id is not None:
+            player = fsm.hand_state.players[player_id]
+            player.stack -= event.amount
+            player.current_bet += event.amount
+            fsm.hand_state.pot += event.amount
+            ctx.pot += event.amount
+            _sync_current_bet(fsm.hand_state, ctx)
+        return
+
+    if isinstance(event, PlayerStackChanged):
+        player_id = _player_id_by_seat(fsm.hand_state, event.seat)
+        if player_id is not None:
+            fsm.hand_state.players[player_id].stack = event.new_stack
+        return
+
+    if isinstance(event, DealerButtonMoved):
+        ctx.button_seat = event.new_seat
+        return
+
+
+def _player_id_by_seat(hand_state: HandSnapshot, seat: int) -> str | None:
+    for player_id, player in hand_state.players.items():
+        if player.seat == seat:
+            return player_id
+    return None
+
+
+def _sync_current_bet(hand_state: HandSnapshot, ctx: TableContext) -> None:
+    current_bet = max(
+        (player.current_bet for player in hand_state.players.values() if not player.has_folded), default=Decimal("0")
+    )
+    hand_state.current_bet_to_match = current_bet
+    ctx.current_bet = current_bet
+    ctx.contributions_this_street = {
+        player_id: player.current_bet for player_id, player in hand_state.players.items() if player.current_bet > 0
+    }
+
+
+def _sync_active_players(hand_state: HandSnapshot, ctx: TableContext) -> None:
+    ctx.active_players = [player_id for player_id, player in hand_state.players.items() if not player.has_folded]
+
+
+def _to_decimal(value: Any) -> Decimal:
+    return Decimal(str(value))

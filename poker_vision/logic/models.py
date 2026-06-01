@@ -55,6 +55,10 @@ class PlayerState(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class HandQuality(BaseModel):
+    needs_review: bool = False
+
+
 class HandState(BaseModel):
     """Snapshot completo do estado da mesa em determinado momento."""
 
@@ -66,3 +70,4 @@ class HandState(BaseModel):
     action_on_seat: Optional[int] = Field(default=None, ge=0)
     players: dict[str, PlayerState] = Field(default_factory=dict)
     action_log: list[ActionLogEntry] = Field(default_factory=list)
+    quality: HandQuality = Field(default_factory=HandQuality)

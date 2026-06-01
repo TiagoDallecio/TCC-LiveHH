@@ -1,0 +1,106 @@
+name: 04_side_pot_all_in
+table:
+  num_players: 6
+  blinds: [1, 2]
+  button_seat: 0
+  hero_seat: 0
+  hero_id: Hero
+  seat_order: [Hero, Villain_1, Villain_2, Villain_3, Villain_4, Villain_5]
+  turn_pointer: Villain_3
+initial_state:
+  street: preflop
+  board: []
+  pot: "3"
+  current_bet_to_match: "2"
+  action_on_seat: 3
+  players:
+    Hero:
+      seat: 0
+      stack: "60"
+      current_bet: "0"
+    Villain_1:
+      seat: 1
+      stack: "99"
+      current_bet: "1"
+    Villain_2:
+      seat: 2
+      stack: "38"
+      current_bet: "2"
+    Villain_3:
+      seat: 3
+      stack: "20"
+      current_bet: "0"
+    Villain_4:
+      seat: 4
+      stack: "90"
+      current_bet: "0"
+    Villain_5:
+      seat: 5
+      stack: "120"
+      current_bet: "0"
+events:
+  - type: NewHandDetected
+    frame_idx: 1
+    confidence: 0.99
+    dealer_seat: 0
+  - type: HoleCardsVisible
+    frame_idx: 2
+    confidence: 0.99
+    cards: [Ac, Kh]
+  - type: SyntheticAction
+    player_id: Villain_3
+    action: all_in
+    amount: "20"
+    next_action_on_seat: 4
+    next_player_id: Villain_4
+  - type: SyntheticAction
+    player_id: Villain_4
+    action: fold
+    next_action_on_seat: 5
+    next_player_id: Villain_5
+  - type: SyntheticAction
+    player_id: Villain_5
+    action: all_in
+    amount: "120"
+    next_action_on_seat: 0
+    next_player_id: Hero
+  - type: SyntheticAction
+    player_id: Hero
+    action: all_in
+    amount: "60"
+    next_action_on_seat: 1
+    next_player_id: Villain_1
+  - type: SyntheticAction
+    player_id: Villain_1
+    action: fold
+    next_action_on_seat: 2
+    next_player_id: Villain_2
+  - type: SyntheticAction
+    player_id: Villain_2
+    action: all_in
+    amount: "38"
+    next_action_on_seat: 5
+    next_player_id: Villain_5
+  - type: BoardCardsRevealed
+    frame_idx: 3
+    confidence: 0.98
+    cards: [9c, Ts, 2d]
+  - type: BoardCardsRevealed
+    frame_idx: 4
+    confidence: 0.98
+    cards: [9c, Ts, 2d, 5h]
+  - type: BoardCardsRevealed
+    frame_idx: 5
+    confidence: 0.98
+    cards: [9c, Ts, 2d, 5h, Qs]
+  - type: showdown
+  - type: ChipsAwarded
+    frame_idx: 6
+    confidence: 0.95
+    seat: 0
+    amount: "216"
+  - type: ChipsAwarded
+    frame_idx: 7
+    confidence: 0.95
+    seat: 5
+    amount: "25"

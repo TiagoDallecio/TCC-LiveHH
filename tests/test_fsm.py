@@ -1,8 +1,13 @@
 from decimal import Decimal
 
+import pytest
+
 from poker_vision.inference.opponent_action_inferencer import OpponentActionInferencer, TableContext
 from poker_vision.logic.events import BoardCardsRevealed, HoleCardsVisible, NewHandDetected
 from poker_vision.logic.hand_fsm import HandFSM, HandState
+from poker_vision.logic.invariants import InvariantViolationError
+from poker_vision.logic.models import HandState as HandSnapshot
+from poker_vision.logic.models import PlayerState
 from poker_vision.logic.street_fsm import StreetFSM, StreetState
 
 
@@ -53,6 +58,24 @@ def test_hand_fsm_invalid_event_is_ignored(caplog) -> None:
 
     assert fsm.state == HandState.IDLE
     assert "Evento inválido para estado atual" in caplog.text
+
+
+def test_hand_fsm_transition_checks_invariants() -> None:
+    fsm = HandFSM(_make_ctx(), OpponentActionInferencer())
+    invalid_hand_state = HandSnapshot(
+        street="preflop",
+        pot=Decimal("0"),
+        players={
+            "Hero": PlayerState(seat=0, stack=Decimal("10"), current_bet=Decimal("0")),
+        },
+    )
+    invalid_hand_state.players["Hero"].stack = Decimal("-1")
+    fsm.set_hand_state(invalid_hand_state)
+
+    with pytest.raises(InvariantViolationError, match="negative stack"):
+        fsm.handle(NewHandDetected(frame_idx=1, confidence=0.99, dealer_seat=0))
+
+    assert fsm.hand_state.quality.needs_review is True
 
 
 def test_street_fsm_preflop_raise_folds_bb_call() -> None:
