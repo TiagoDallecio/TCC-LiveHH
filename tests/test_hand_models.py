@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from poker_vision.logic.models import ActionLogEntry, HandState, PlayerState
+from poker_vision.logic.models import ActionLogEntry, HandQuality, HandState, PlayerState
 
 
 def make_player(seat: int = 0, stack: str = "1000") -> PlayerState:
@@ -92,6 +92,7 @@ def test_hand_state_defaults() -> None:
     assert hs.action_log == []
     assert hs.last_raiser is None
     assert hs.action_on_seat is None
+    assert hs.quality == HandQuality()
 
 
 def test_player_state_json_round_trip() -> None:

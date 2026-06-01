@@ -17,6 +17,8 @@ from poker_vision.logic.events import (
     NewHandDetected,
     VisualEvent,
 )
+from poker_vision.logic.invariants import check_invariants
+from poker_vision.logic.models import HandState as HandSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,10 @@ class HandFSM:
         self.inferencer = inferencer
         self.state: HandState = HandState.IDLE
         self.state_history: list[HandState] = [self.state]
+        self.hand_state: HandSnapshot = HandSnapshot(street=ctx.current_street)
+
+    def set_hand_state(self, hand_state: HandSnapshot) -> None:
+        self.hand_state = hand_state
 
     def handle(self, event: VisualEvent | str) -> None:
         handlers: dict[HandState, Callable[[VisualEvent | str], None]] = {
@@ -159,6 +165,10 @@ class HandFSM:
             return
         self.state = new_state
         self.state_history.append(new_state)
+        self.hand_state.street = self.ctx.current_street
+        self.hand_state.pot = self.ctx.pot
+        self.hand_state.current_bet_to_match = self.ctx.current_bet
+        check_invariants(self.hand_state)
 
     def _ignore(self, event: object) -> None:
         logger.warning("Evento inválido para estado atual (%s): %r", self.state.value, event)

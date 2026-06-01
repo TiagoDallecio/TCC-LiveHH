@@ -19,6 +19,7 @@ from poker_vision.inference.card_detector_stage import CardDetectorStage
 from poker_vision.inference.card_stabilizer_stage import CardStabilizerStage
 from poker_vision.inference.opponent_action_inferencer import OpponentActionInferencer
 from poker_vision.logic.hand_fsm import HandFSM
+from poker_vision.logic.replay import run_replay_scenario
 from poker_vision.run_manager import setup_run_directory
 
 
@@ -51,6 +52,9 @@ def main() -> None:
     overlay_parser = cal_sub.add_parser("overlay", help="Testa as RoIs projetadas no vídeo ao vivo")
     overlay_parser.add_argument("video", help="Caminho para o vídeo (.mp4)")
     overlay_parser.add_argument("profile", help="Caminho para o YAML de calibração")
+
+    replay_parser = subparsers.add_parser("replay", help="Executa replay determinístico de cenário YAML")
+    replay_parser.add_argument("scenario", help="Caminho para o arquivo de cenário YAML")
 
     args = parser.parse_args()
 
@@ -126,6 +130,14 @@ def main() -> None:
             finally:
                 orchestrator.stop()
                 logger.info("Pipeline encerrado graciosamente.")
+
+        elif args.command == "replay":
+            result = run_replay_scenario(Path(args.scenario))
+            print(f"Scenario: {result.scenario_name}")
+            for line in result.transition_logs:
+                print(line)
+            print(f"Final state: {result.final_state}")
+            print(f"Needs review: {result.needs_review}")
 
         elif args.command == "layout" and args.action == "render":
             from poker_vision.geometry.layout import render_layout
