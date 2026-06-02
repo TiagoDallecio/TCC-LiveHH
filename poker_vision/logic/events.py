@@ -1,5 +1,5 @@
 """
-Eventos visuais da pipeline (Issue #17)
+Eventos visuais da pipeline
 ========================================
 
 Cada evento representa uma observação de alta confiança emitida pela camada
@@ -16,6 +16,9 @@ from decimal import Decimal
 from typing import Optional
 
 from pydantic import BaseModel, Field
+
+from poker_vision.inference.opponent_action_inferencer import ActionKind
+from poker_vision.inference.opponent_action_inferencer import AnchorEvent as InferenceAnchorEvent
 
 
 class VisualEvent(BaseModel):
@@ -55,31 +58,48 @@ class BoardCardsRevealed(VisualEvent):
 # ---------------------------------------------------------------------------
 
 
-class ChipsIntoBetZone(VisualEvent):
-    """Fichas de um jogador foram movidas para a zona de aposta."""
+class PotChanged(VisualEvent):
+    """Emitido pela fase 6 quando o montante de fichas na mesa muda."""
 
-    seat: int
+    old: Decimal = Field(ge=Decimal("0"))
+    new: Decimal = Field(ge=Decimal("0"))
+    delta: Decimal
+
+
+class HeroBetDetected(VisualEvent):
+    """Emitido quando o Hero faz uma jogada explícita."""
+
+    action: ActionKind
+    amount: Decimal = Field(ge=Decimal("0"))
+
+
+class AnchorEvent(VisualEvent):
+    """Wrapper visual para carregar âncoras para o motor de inferência."""
+
+    anchor: InferenceAnchorEvent
+
+
+class AnchorEventDetected(AnchorEvent):
+    pass
+
+
+class ChipsIntoBetZone(VisualEvent):
+    seat: int = Field(ge=0)
     amount: Decimal = Field(ge=Decimal("0"))
 
 
 class ChipsIntoPot(VisualEvent):
-    """Fichas da zona de aposta foram recolhidas ao pote central."""
-
-    amount: Decimal = Field(ge=Decimal("0"))
-
-
-class ChipsAwarded(VisualEvent):
-    """Fichas do pote foram entregues ao vencedor."""
-
-    seat: int
     amount: Decimal = Field(ge=Decimal("0"))
 
 
 class PlayerStackChanged(VisualEvent):
-    """Stack de um jogador mudou de valor."""
-
-    seat: int
+    seat: int = Field(ge=0)
     new_stack: Decimal = Field(ge=Decimal("0"))
+
+
+class ChipsAwarded(VisualEvent):
+    seat: int = Field(ge=0)
+    amount: Decimal = Field(ge=Decimal("0"))
 
 
 # ---------------------------------------------------------------------------

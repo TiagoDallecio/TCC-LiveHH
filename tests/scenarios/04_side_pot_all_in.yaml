@@ -47,60 +47,60 @@ events:
     frame_idx: 2
     confidence: 0.99
     cards: [Ac, Kh]
-  - type: SyntheticAction
-    player_id: Villain_3
-    action: all_in
-    amount: "20"
-    next_action_on_seat: 4
-    next_player_id: Villain_4
-  - type: SyntheticAction
-    player_id: Villain_4
-    action: fold
-    next_action_on_seat: 5
-    next_player_id: Villain_5
-  - type: SyntheticAction
-    player_id: Villain_5
-    action: all_in
-    amount: "120"
-    next_action_on_seat: 0
-    next_player_id: Hero
-  - type: SyntheticAction
-    player_id: Hero
-    action: all_in
-    amount: "60"
-    next_action_on_seat: 1
-    next_player_id: Villain_1
-  - type: SyntheticAction
-    player_id: Villain_1
-    action: fold
-    next_action_on_seat: 2
-    next_player_id: Villain_2
-  - type: SyntheticAction
-    player_id: Villain_2
-    action: all_in
-    amount: "38"
-    next_action_on_seat: 5
-    next_player_id: Villain_5
-  - type: BoardCardsRevealed
+  - type: AnchorEvent
     frame_idx: 3
+    confidence: 0.99
+    turn_pointer: Villain_5
+    anchor_data:
+      anchor_type: hand_start
+      timestamp: 1.0
+      street: preflop
+      pot_before: "3"
+      pot_after: "3"
+      board: []
+  - type: PotChanged
+    frame_idx: 4
+    confidence: 0.99
+    old: "3"
+    new: "241"
+    delta: "238"
+  - type: AnchorEvent
+    frame_idx: 5
+    confidence: 0.99
+    turn_pointer: Villain_5
+    anchor_data:
+      anchor_type: street_start
+      timestamp: 2.0
+      street: preflop
+      pot_before: "241"
+      pot_after: "241"
+      board: []
+  - type: BoardCardsRevealed
+    frame_idx: 6
     confidence: 0.98
     cards: [9c, Ts, 2d]
   - type: BoardCardsRevealed
-    frame_idx: 4
+    frame_idx: 7
     confidence: 0.98
     cards: [9c, Ts, 2d, 5h]
   - type: BoardCardsRevealed
-    frame_idx: 5
+    frame_idx: 8
     confidence: 0.98
     cards: [9c, Ts, 2d, 5h, Qs]
   - type: showdown
+  - type: PotChanged
+    frame_idx: 9
+    confidence: 0.99
+    old: "241"
+    new: "0"
+    delta: "-241"
   - type: ChipsAwarded
-    frame_idx: 6
+    frame_idx: 10
     confidence: 0.95
     seat: 0
     amount: "216"
   - type: ChipsAwarded
-    frame_idx: 7
+    frame_idx: 11
     confidence: 0.95
     seat: 5
     amount: "25"

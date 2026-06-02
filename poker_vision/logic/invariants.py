@@ -20,7 +20,7 @@ def check_invariants(hand_state: HandState) -> None:
     for player_id, player in hand_state.players.items():
         seat_to_players.setdefault(player.seat, []).append(player_id)
 
-        if player.stack < 0:
+        if player.stack is not None and player.stack < 0:
             _raise_violation(
                 hand_state,
                 f"Invariant failed: player '{player_id}' has negative stack={player.stack}",

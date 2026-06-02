@@ -27,21 +27,30 @@ class StreetFSM:
         self,
         players_in_seat_order: list[str],
         button_seat: int,
-        stacks: dict[str, Decimal],
+        stacks: dict[str, Decimal | None],
         is_preflop: bool,
+        initial_current_bet: Decimal = Decimal("0"),
+        initial_contributions: dict[str, Decimal] | None = None,
+        folded_players: set[str] | None = None,
+        all_in_players: set[str] | None = None,
     ) -> None:
         if not players_in_seat_order:
             raise ValueError("players_in_seat_order vazio")
         self.players_in_seat_order = players_in_seat_order
         self.button_seat = button_seat
-        self.stacks = {player: Decimal(value) for player, value in stacks.items()}
+        self.stacks = {player: (Decimal(value) if value is not None else None) for player, value in stacks.items()}
         self.is_preflop = is_preflop
         self.state: StreetState = StreetState.STREET_OPEN
-        self.current_bet_to_match: Decimal = Decimal("0")
+        self.current_bet_to_match: Decimal = Decimal(initial_current_bet)
         self.contributions: dict[str, Decimal] = {player: Decimal("0") for player in players_in_seat_order}
-        self.folded: set[str] = set()
-        self.all_in: set[str] = set()
+        if initial_contributions is not None:
+            for player_id, amount in initial_contributions.items():
+                if player_id in self.contributions:
+                    self.contributions[player_id] = Decimal(amount)
+        self.folded: set[str] = set(folded_players or set())
+        self.all_in: set[str] = set(all_in_players or set())
         self.action_log: list[StreetAction] = []
+        self.turn_pointer: str | None = None
         self.action_on_player: str | None = None
         self._players_to_act: list[str] = []
         self._open_street()
@@ -50,7 +59,27 @@ class StreetFSM:
         self.state = StreetState.AWAITING_ACTION
         first_to_act = self._first_to_act()
         self._players_to_act = self._order_from(first_to_act)
-        self.action_on_player = self._players_to_act[0] if self._players_to_act else None
+        self.turn_pointer = self._players_to_act[0] if self._players_to_act else None
+        self.action_on_player = self.turn_pointer
+
+    def set_turn_pointer(self, player_id: str) -> None:
+        if self.state == StreetState.STREET_CLOSED:
+            return
+        if player_id not in self.players_in_seat_order:
+            raise ValueError("player_id desconhecido")
+
+        ordered = self._order_from(player_id)
+        if not ordered:
+            self._players_to_act = []
+            self.turn_pointer = None
+            self.action_on_player = None
+            self.state = StreetState.STREET_CLOSED
+            return
+
+        self._players_to_act = ordered
+        self.turn_pointer = ordered[0]
+        self.action_on_player = self.turn_pointer
+        self.state = StreetState.AWAITING_ACTION
 
     def _first_to_act(self) -> str:
         n = len(self.players_in_seat_order)
@@ -71,69 +100,65 @@ class StreetFSM:
             out.append(candidate)
         return out
 
-    def classify_action(self, player_id: str, amount: Decimal) -> ActionKind:
-        if player_id in self.folded:
-            raise ValueError("Jogador já foldou")
-        if player_id in self.all_in:
-            raise ValueError("Jogador já está all-in")
-        if amount < 0:
-            raise ValueError("amount negativo")
-        stack = self.stacks[player_id]
-        to_call = self.current_bet_to_match - self.contributions[player_id]
+    def apply_action(self, player_id: str, amount: Decimal) -> None:
+        amount_value = Decimal(amount)
+        if amount_value < 0:
+            raise ValueError("amount deve ser >= 0")
+        if self.turn_pointer is not None and player_id != self.turn_pointer:
+            raise ValueError("Ação fora de ordem")
 
-        if amount == 0:
-            if to_call > 0:
-                return "fold"
-            return "check"
+        if player_id not in self.contributions:
+            raise ValueError("player_id desconhecido")
 
-        is_all_in_amount = amount == stack
+        stack = self.stacks.get(player_id)
+        contribution_after = self.contributions[player_id] + amount_value
 
-        if to_call > 0:
-            if amount < to_call:
-                if is_all_in_amount:
-                    return "all_in"
-                raise ValueError("Ação inválida: valor menor que call sem all-in")
-            if amount == to_call:
-                if is_all_in_amount:
-                    return "all_in"
-                return "call"
-            if is_all_in_amount:
-                return "all_in"
-            return "raise"
+        if amount_value == 0:
+            action: ActionKind = "check" if self.current_bet_to_match == self.contributions[player_id] else "fold"
+        elif stack is not None and amount_value >= stack:
+            action = "all_in"
+        elif contribution_after > self.current_bet_to_match:
+            if self.is_preflop:
+                action = "raise"
+            else:
+                action = "bet" if self.current_bet_to_match == 0 else "raise"
+        elif contribution_after == self.current_bet_to_match:
+            action = "call"
+        else:
+            raise ValueError("amount inválido para estado atual")
 
-        if is_all_in_amount:
-            return "all_in"
-        if self.is_preflop:
-            return "raise"
-        return "bet"
+        self.apply_inferred_actions([StreetAction(player_id=player_id, action=action, amount=amount_value)])
 
-    def apply_action(self, player_id: str, amount: Decimal) -> StreetAction:
+    def apply_inferred_actions(self, actions: list[StreetAction]) -> None:
+        """Avança o estado da street processando em lote as ações deduzidas pelo Inferencer."""
         if self.state not in (StreetState.AWAITING_ACTION, StreetState.VALIDATING_ACTION, StreetState.APPLYING_ACTION):
             raise ValueError("Street fechada")
-        if self.action_on_player != player_id:
-            raise ValueError("Não é a vez do jogador")
-
-        self.state = StreetState.VALIDATING_ACTION
-        action_kind = self.classify_action(player_id, amount)
 
         self.state = StreetState.APPLYING_ACTION
-        applied_amount = Decimal("0")
 
-        if action_kind == "fold":
-            self.folded.add(player_id)
-        else:
-            applied_amount = amount
-            self.stacks[player_id] = self.stacks[player_id] - applied_amount
-            self.contributions[player_id] = self.contributions[player_id] + applied_amount
-            if action_kind in ("bet", "raise", "all_in") and self.contributions[player_id] > self.current_bet_to_match:
-                self.current_bet_to_match = self.contributions[player_id]
-            if action_kind == "all_in":
-                self.all_in.add(player_id)
+        for act in actions:
+            if self.turn_pointer is not None and act.player_id != self.turn_pointer:
+                raise ValueError("Ação inferida fora de ordem")
+            if act.player_id not in self.contributions:
+                raise ValueError("player_id desconhecido")
 
-        action = StreetAction(player_id=player_id, action=action_kind, amount=applied_amount)
-        self.action_log.append(action)
-        self._advance_after_action(player_id, action_kind)
-        return action
+            if act.action == "fold":
+                self.folded.add(act.player_id)
+                act_amount = Decimal("0")
+            else:
+                act_amount = Decimal(act.amount)
+                self.contributions[act.player_id] += act_amount
+                if self.contributions[act.player_id] > self.current_bet_to_match:
+                    self.current_bet_to_match = self.contributions[act.player_id]
+                if act.action == "all_in":
+                    self.all_in.add(act.player_id)
+
+            stack = self.stacks.get(act.player_id)
+            if stack is not None:
+                self.stacks[act.player_id] = stack - act_amount
+
+            self.action_log.append(StreetAction(player_id=act.player_id, action=act.action, amount=act_amount))
+            self._advance_after_action(act.player_id, act.action)
 
     def _advance_after_action(self, actor: str, action_kind: ActionKind) -> None:
         if actor in self._players_to_act:
@@ -146,11 +171,13 @@ class StreetFSM:
 
         if not self._players_to_act:
             self.state = StreetState.STREET_CLOSED
+            self.turn_pointer = None
             self.action_on_player = None
             return
 
         self.state = StreetState.AWAITING_ACTION
-        self.action_on_player = self._players_to_act[0]
+        self.turn_pointer = self._players_to_act[0]
+        self.action_on_player = self.turn_pointer
 
     def _next_seat_player(self, player_id: str) -> str:
         n = len(self.players_in_seat_order)

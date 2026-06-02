@@ -47,34 +47,43 @@ events:
     frame_idx: 2
     confidence: 0.99
     cards: [Ah, Kd]
-  - type: SyntheticAction
-    player_id: Villain_3
-    action: fold
-    next_action_on_seat: 4
-    next_player_id: Villain_4
-  - type: SyntheticAction
-    player_id: Villain_4
-    action: fold
-    next_action_on_seat: 5
-    next_player_id: Villain_5
-  - type: SyntheticAction
-    player_id: Villain_5
-    action: fold
-    next_action_on_seat: 0
-    next_player_id: Hero
-  - type: SyntheticAction
-    player_id: Hero
-    action: fold
-    next_action_on_seat: 1
-    next_player_id: Villain_1
-  - type: SyntheticAction
-    player_id: Villain_1
-    action: fold
-    next_action_on_seat: 2
-    next_player_id: Villain_2
-  - type: showdown
-  - type: ChipsAwarded
+  - type: AnchorEvent
     frame_idx: 3
+    confidence: 0.99
+    turn_pointer: Hero
+    anchor_data:
+      anchor_type: hand_start
+      timestamp: 1.0
+      street: preflop
+      pot_before: "3"
+      pot_after: "3"
+      board: []
+  - type: PotChanged
+    frame_idx: 4
+    confidence: 0.99
+    old: "3"
+    new: "3"
+    delta: "0"
+  - type: AnchorEvent
+    frame_idx: 5
+    confidence: 0.99
+    turn_pointer: Hero
+    anchor_data:
+      anchor_type: hand_end
+      timestamp: 2.0
+      street: preflop
+      pot_before: "3"
+      pot_after: "3"
+      board: []
+  - type: showdown
+  - type: PotChanged
+    frame_idx: 6
+    confidence: 0.99
+    old: "3"
+    new: "0"
+    delta: "-3"
+  - type: ChipsAwarded
+    frame_idx: 7
     confidence: 0.95
     seat: 2
     amount: "3"
