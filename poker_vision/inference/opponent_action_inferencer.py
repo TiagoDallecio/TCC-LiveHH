@@ -20,14 +20,13 @@ from collections import deque
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
-from typing import Literal, Optional
+from typing import Optional
+
+from poker_vision.inference.table_context import ActionKind, Street, TableContext
 
 # ---------------------------------------------------------------------------
 # 1. Public data model
 # ---------------------------------------------------------------------------
-
-ActionKind = Literal["fold", "check", "call", "bet", "raise", "all_in"]
-Street = Literal["preflop", "flop", "turn", "river"]
 
 
 class AnchorType(str, Enum):
@@ -54,7 +53,7 @@ class AnchorEvent:
     pot_after: Decimal
     board: tuple[str, ...] = ()
     hero_action: Optional[HeroAction] = None
-    pot_estimator_quality: float = 1.0  # 0..1 — CV layer self-assessment
+    pot_estimator_quality: float = 1.0
 
 
 @dataclass
@@ -65,24 +64,7 @@ class InferredAction:
     confidence: float = 0.0
     rationale: str = ""
     is_inferred: bool = True
-
-
-@dataclass
-class TableContext:
-    """FSM-owned state. The inferencer reads, never mutates."""
-
-    num_players: int
-    button_seat: int
-    hero_seat: int
-    seat_order: list[str]  # clockwise from seat 0
-    active_players: list[str]  # still in the hand
-    current_street: Street
-    current_bet: Decimal  # bet to call this street
-    last_raise_size: Decimal  # min-raise reference
-    turn_pointer: str  # whose turn it is *now*
-    pot: Decimal
-    contributions_this_street: dict[str, Decimal] = field(default_factory=dict)
-    hero_id: str = "Hero"
+    metadata: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -92,14 +74,11 @@ class TableContext:
 
 @dataclass
 class InferencerConfig:
-    # Pot-delta deadband: noise floor below which Δ is treated as zero.
     pot_noise_abs: Decimal = Decimal("2")
-    pot_noise_rel: float = 0.05  # 5% of current pot
+    pot_noise_rel: float = 0.05
 
-    # DFS search limits.
-    max_sequence_depth: int = 8  # safety cap
+    max_sequence_depth: int = 8
     raise_size_grid: tuple[float, ...] = (
-        # multiples of the "min-raise total" plus canonical pot fractions
         1.0,
         1.5,
         2.0,
@@ -119,8 +98,6 @@ class InferencerConfig:
         3.0,
     )
 
-    # Action-prior base rates (per street, per action). Source: published
-    # PokerTracker aggregate stats; tune per population.
     action_priors: dict[Street, dict[ActionKind, float]] = field(
         default_factory=lambda: {
             "preflop": {"fold": 0.55, "call": 0.20, "raise": 0.18, "check": 0.07},
@@ -130,19 +107,30 @@ class InferencerConfig:
         }
     )
 
-    # Sizing-prior shape: exp(-distance * sharpness)
     sizing_sharpness: float = 4.0
 
-    # Occam penalty per "extra" non-fold action above 1.
-    occam_quadratic_weight: float = 0.30
+    occam_quadratic_weight: float = 0.05
 
-    # 3-bet (re-raise) penalty inside a single window.
-    rebrace_penalty: float = 0.20
+    occam_linear_weight: float = 0.15
 
-    # Confidence math.
+    rebrace_penalty: float = 0.25
+
+    constraint_pruning_margin_weight: float = 1.5
+    reconciliation_dampening: float = 0.15
     confidence_margin_gain: float = 2.0
     min_window_confidence: float = 0.05
     min_action_confidence: float = 0.05
+    confidence_forced_action: float = 0.97
+    confidence_clean_check: float = 0.92
+    confidence_inferred_fold: float = 0.65
+    confidence_dfs_base: float = 0.55
+    confidence_dfs_margin_weight: float = 0.35
+    confidence_dfs_max: float = 0.90
+    confidence_fallback_action: float = 0.20
+    confidence_fallback_fold: float = 0.25
+
+    zero_delta_epsilon: Decimal = Decimal("2.0")
+
     action_confidence_modifier: dict[ActionKind, float] = field(
         default_factory=lambda: {
             "fold": +0.05,
@@ -255,12 +243,14 @@ def enumerate_action_sequences(
     delta_pot: Decimal,
     ctx: TableContext,
     cfg: InferencerConfig,
+    non_folders: frozenset[str] = frozenset(),
 ) -> list[list[InferredAction]]:
     """
     DFS through legal action sequences whose contributions sum to delta_pot.
 
     Each returned sequence has len(players) actions, one per player, in turn
     order. Pruned aggressively using poker legality.
+    :param non_folders:
     """
     results: list[list[InferredAction]] = []
     if len(players) > cfg.max_sequence_depth:
@@ -285,55 +275,65 @@ def enumerate_action_sequences(
         player = players[idx]
         pc = contribs.get(player, Decimal(0))
         to_call = current_bet - pc
+        fold_allowed = player not in non_folders
 
-        # --- Option 1: fold ---
-        seq.append(InferredAction(player, "fold", Decimal(0)))
-        dfs(idx + 1, remaining, current_bet, last_raise, contribs, seq)
-        seq.pop()
-
-        # --- Option 2: check (only if nothing to call) ---
         if to_call == 0:
-            seq.append(InferredAction(player, "check", Decimal(0)))
-            dfs(idx + 1, remaining, current_bet, last_raise, contribs, seq)
-            seq.pop()
+            hypothesis_order = ["check", "call", "raise"]
+        else:
+            hypothesis_order = ["call", "raise", "check"]
 
-        # --- Option 3: call ---
-        if 0 < to_call <= remaining:
-            new_contribs = dict(contribs)
-            new_contribs[player] = pc + to_call
-            seq.append(InferredAction(player, "call", to_call))
-            dfs(idx + 1, remaining - to_call, current_bet, last_raise, new_contribs, seq)
-            seq.pop()
+        if fold_allowed:
+            hypothesis_order.append("fold")
 
-        # --- Option 4: raise (try discrete legal sizes) ---
-        raise_options = _legal_raise_contributions(
-            current_bet=current_bet,
-            last_raise=last_raise,
-            player_contribution=pc,
-            remaining_delta=remaining,
-            pot=ctx.pot,
-            cfg=cfg,
-        )
-        for contribution in raise_options:
-            new_raise_to = pc + contribution
-            new_last_raise = new_raise_to - current_bet
-            new_contribs = dict(contribs)
-            new_contribs[player] = new_raise_to
+        for action in hypothesis_order:
+            if action == "fold":
+                seq.append(InferredAction(player, "fold", Decimal(0)))
+                dfs(idx + 1, remaining, current_bet, last_raise, contribs, seq)
+                seq.pop()
 
-            # Heuristic: very large contribution -> all_in label.
-            action_kind: ActionKind = "raise"
-            if (
-                current_bet > 0
-                and contribution >= cfg.all_in_contribution_multiplier * current_bet
-                and contribution == remaining
-            ):
-                action_kind = "all_in"
-            elif current_bet == 0:
-                action_kind = "bet"
+            elif action == "check":
+                if to_call == 0:
+                    seq.append(InferredAction(player, "check", Decimal(0)))
+                    dfs(idx + 1, remaining, current_bet, last_raise, contribs, seq)
+                    seq.pop()
 
-            seq.append(InferredAction(player, action_kind, contribution))
-            dfs(idx + 1, remaining - contribution, new_raise_to, new_last_raise, new_contribs, seq)
-            seq.pop()
+            elif action == "call":
+                if 0 < to_call <= remaining:
+                    new_contribs = dict(contribs)
+                    new_contribs[player] = pc + to_call
+                    seq.append(InferredAction(player, "call", to_call))
+                    dfs(idx + 1, remaining - to_call, current_bet, last_raise, new_contribs, seq)
+                    seq.pop()
+
+            elif action == "raise":
+                raise_options = _legal_raise_contributions(
+                    current_bet=current_bet,
+                    last_raise=last_raise,
+                    player_contribution=pc,
+                    remaining_delta=remaining,
+                    pot=ctx.pot,
+                    cfg=cfg,
+                )
+                for contribution in raise_options:
+                    new_raise_to = pc + contribution
+                    new_last_raise = new_raise_to - current_bet
+                    new_contribs = dict(contribs)
+                    new_contribs[player] = new_raise_to
+
+                    # Heurística de ação (Bet, Raise ou All-in)
+                    action_kind: ActionKind = "raise"
+                    if (
+                        current_bet > 0
+                        and contribution >= cfg.all_in_contribution_multiplier * current_bet
+                        and contribution == remaining
+                    ):
+                        action_kind = "all_in"
+                    elif current_bet == 0:
+                        action_kind = "bet"
+
+                    seq.append(InferredAction(player, action_kind, contribution))
+                    dfs(idx + 1, remaining - contribution, new_raise_to, new_last_raise, new_contribs, seq)
+                    seq.pop()
 
     dfs(0, delta_pot, ctx.current_bet, ctx.last_raise_size, contribs0, [])
     return results
@@ -366,7 +366,9 @@ def _sizing_prior(action: InferredAction, ctx: TableContext, cfg: InferencerConf
 def _occams_penalty(seq: list[InferredAction], cfg: InferencerConfig) -> float:
     non_fold = sum(1 for a in seq if a.action != "fold")
     raises = sum(1 for a in seq if a.action in ("bet", "raise", "all_in"))
-    penalty = cfg.occam_quadratic_weight * max(0, non_fold - 1) ** 2
+
+    penalty = cfg.occam_linear_weight * max(0, non_fold, -1)
+    penalty += cfg.occam_quadratic_weight * max(0, non_fold - 1) ** 2
     penalty += cfg.rebrace_penalty * max(0, raises - 1)
     return -penalty
 
@@ -448,21 +450,29 @@ class OpponentActionInferencer:
         """Optional: feed continuous pot readings for variance estimation."""
         self._pot_history.append((timestamp, pot))
 
-    def on_anchor(self, anchor: AnchorEvent, ctx: TableContext) -> list[InferredAction]:
+    def on_anchor(
+        self, anchor: AnchorEvent, ctx: TableContext, non_folders: frozenset[str] = frozenset()
+    ) -> list[InferredAction]:
         """
         Primary entrypoint. Returns the actions attributed to the window
         ending at `anchor`. The first anchor in a hand returns an empty list
         and is stored as the open window.
         """
-        if self._pending is None:
-            self._pending = anchor
-            return []
 
+        snapshot = ctx.snapshot_constraints()
         try:
-            inferred = self._attribute_window(self._pending, anchor, ctx)
+            if self._pending is None:
+                self._pending = anchor
+                return []
+
+            try:
+                inferred = self._attribute_window(self._pending, anchor, ctx, non_folders=non_folders)
+            finally:
+                self._pending = anchor
+            return inferred
+
         finally:
-            self._pending = anchor
-        return inferred
+            ctx.assert_constraints_match(snapshot, where="on_anchor")
 
     # ---- Internals ----
 
@@ -491,7 +501,8 @@ class OpponentActionInferencer:
 
         # We want players from turn_pointer (inclusive) up to (but not
         # including) end_marker, all from active opponents.
-        start_after = self._prev_in_order(ctx.turn_pointer, ctx.seat_order)
+        if ctx.turn_pointer is not None:
+            start_after = self._prev_in_order(ctx.turn_pointer, ctx.seat_order)
         players = _players_between(
             start_after=start_after,
             end_before=end_marker,
@@ -512,16 +523,27 @@ class OpponentActionInferencer:
         out: list[InferredAction] = []
         for p in players:
             pc = ctx.contributions_this_street.get(p, Decimal(0))
-            kind: ActionKind = "check" if pc == ctx.current_bet else "fold"
-            out.append(
-                InferredAction(
-                    player_id=p,
-                    action=kind,
-                    amount=Decimal(0),
-                    confidence=0.85,
-                    rationale="zero pot delta in window",
+            is_matched = pc == ctx.current_bet
+            if is_matched:
+                out.append(
+                    InferredAction(
+                        player_id=p,
+                        action="check",
+                        amount=Decimal(0),
+                        confidence=self.cfg.confidence_clean_check,
+                        rationale="zero delta, player matched to current bet",
+                    )
                 )
-            )
+            else:
+                out.append(
+                    InferredAction(
+                        player_id=p,
+                        action="fold",
+                        amount=Decimal(0),
+                        confidence=self.cfg.confidence_inferred_fold,
+                        rationale="zero delta, player owes but did not contribute",
+                    )
+                )
         return out
 
     def _fallback(self, players: list[str], delta: Decimal, ctx: TableContext) -> list[InferredAction]:
@@ -529,14 +551,21 @@ class OpponentActionInferencer:
         to the first player and flag low confidence. This should be rare."""
         if not players:
             return []
+
+        if abs(delta) <= self.cfg.zero_delta_epsilon:
+            return self._all_zero_delta(players, ctx)
+
+        is_opening = ctx.current_bet == 0
         head, *rest = players
+
         out = [
             InferredAction(
                 player_id=head,
-                action="bet" if ctx.current_bet == 0 else "raise",
+                action="bet" if is_opening else "raise",
                 amount=delta,
-                confidence=0.15,
-                rationale="fallback: no legal sequence matched delta",
+                confidence=self.cfg.confidence_fallback_action,
+                rationale="fallback: unnattributed delta, attributed to first-to-act",
+                metadata={"needs_review": True, "fallback_reason": "no_legal_sequence"},
             )
         ]
         for p in rest:
@@ -545,8 +574,9 @@ class OpponentActionInferencer:
                     player_id=p,
                     action="fold",
                     amount=Decimal(0),
-                    confidence=0.30,
-                    rationale="fallback: assumed fold after unattributed bet",
+                    confidence=self.cfg.confidence_fallback_fold,
+                    rationale="fallback: assumed fold after unattributed action",
+                    metadata={"needs_review": True},
                 )
             )
         return out
@@ -565,35 +595,85 @@ class OpponentActionInferencer:
             )
         return f"Δpot=${delta}; unique legal sequence; score={top_score:.3f}"
 
-    def _attribute_window(self, start: AnchorEvent, end: AnchorEvent, ctx: TableContext) -> list[InferredAction]:
+    def _score_with_confidence(
+        self,
+        sequences: list[tuple[list[InferredAction], float]],
+        cfg: InferencerConfig,
+        pre_constraint_count: int = 0,
+    ) -> list[InferredAction]:
+        if not sequences:
+            return []
+
+        sequences.sort(key=lambda s: s[1], reverse=True)
+        best_seq, best_score = sequences[0]
+        runner_up_score = sequences[1][1] if len(sequences) > 1 else best_score - 1.0
+
+        margin = max(0.0, best_score - runner_up_score)
+        was_reconciled = pre_constraint_count > len(sequences)  # <-- Identifica se fomos salvos pelo Showdown
+
+        if was_reconciled:
+            pruning_ratio = 1.0 - (len(sequences) / pre_constraint_count)
+            margin += getattr(cfg, "constraint_pruning_margin_weight", 1.5) * pruning_ratio
+
+        confidence = min(
+            getattr(cfg, "confidence_dfs_max", 0.90),
+            getattr(cfg, "confidence_dfs_base", 0.55) + getattr(cfg, "confidence_dfs_margin_weight", 0.35) * margin,
+        )
+
+        if was_reconciled:
+            confidence -= getattr(cfg, "reconciliation_dampening", 0.15)
+            confidence = max(0.1, confidence)
+
+        for a in best_seq:
+            if getattr(a, "confidence", 0.0) < getattr(cfg, "confidence_forced_action", 0.97):
+                a.confidence = confidence
+
+        return best_seq
+
+    def _attribute_window(
+        self, start: AnchorEvent, end: AnchorEvent, ctx: TableContext, non_folders: frozenset[str] = frozenset()
+    ) -> list[InferredAction]:
         delta = self._sanitized_delta(start, end, ctx)
         players = self._window_players(start, end, ctx)
 
         if not players:
             return []
 
-        if delta == 0:
+        if delta == 0 or abs(delta) <= getattr(self.cfg, "zero_delta_epsilon", Decimal("0.5")):
             return self._all_zero_delta(players, ctx)
 
-        candidates = enumerate_action_sequences(players, delta, ctx, self.cfg)
+        unconstrained_count = len(enumerate_action_sequences(players, delta, ctx, self.cfg, frozenset()))
+
+        candidates = enumerate_action_sequences(players, delta, ctx, self.cfg, non_folders=non_folders)
+
+        constraint_relaxed = False
+        if not candidates and non_folders:
+            candidates = enumerate_action_sequences(players, delta, ctx, self.cfg, non_folders=frozenset())
+            constraint_relaxed = True
+
         if not candidates:
             return self._fallback(players, delta, ctx)
 
         scored = [(seq, score_sequence(seq, ctx, self.cfg)) for seq in candidates]
-        best_seq, best_score = max(scored, key=lambda x: x[1])
-        all_scores = [s for _, s in scored]
-        win_conf = compute_window_confidence(
-            chosen_score=best_score,
-            all_scores=all_scores,
-            pot_estimator_quality=self._estimator_quality(start, end),
-            chosen_seq=best_seq,
-            cfg=self.cfg,
-        )
+
+        best_seq = self._score_with_confidence(scored, self.cfg, pre_constraint_count=unconstrained_count)
+
+        # TASK 4.5.9: Rastreabilidade
         rationale = self._explain(best_seq, scored, delta)
+        was_reconciled = unconstrained_count > len(candidates)
+
+        if constraint_relaxed:
+            rationale += " [CONSTRAINT RELAXED: Over-pruned]"
+        elif was_reconciled:
+            rationale += " [RECONCILED: DFS pruned via Future Showdown]"
 
         for a in best_seq:
-            a.confidence = per_action_confidence(a, win_conf, self.cfg)
             a.rationale = rationale
+            if not hasattr(a, "metadata"):
+                a.metadata = {}
+            if was_reconciled:
+                a.metadata["reconciled_via_showdown"] = True
+
         return best_seq
 
 
