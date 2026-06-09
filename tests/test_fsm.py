@@ -4,7 +4,7 @@ import pytest
 
 from poker_vision.inference.opponent_action_inferencer import OpponentActionInferencer, TableContext
 from poker_vision.logic.events import BoardCardsRevealed, HoleCardsVisible, NewHandDetected
-from poker_vision.logic.hand_fsm import HandFSM, HandState
+from poker_vision.logic.hand_fsm import HandFSM, HandPhase
 from poker_vision.logic.invariants import InvariantViolationError
 from poker_vision.logic.models import HandState as HandSnapshot
 from poker_vision.logic.models import PlayerState
@@ -39,14 +39,14 @@ def test_hand_fsm_transitions_street_order() -> None:
     fsm.handle("showdown")
 
     assert fsm.state_history == [
-        HandState.IDLE,
-        HandState.POSTING_BLINDS,
-        HandState.DEALING_HOLE_CARDS,
-        HandState.PREFLOP,
-        HandState.FLOP,
-        HandState.TURN,
-        HandState.RIVER,
-        HandState.SHOWDOWN,
+        HandPhase.IDLE,
+        HandPhase.POSTING_BLINDS,
+        HandPhase.DEALING_HOLE_CARDS,
+        HandPhase.PREFLOP,
+        HandPhase.FLOP,
+        HandPhase.TURN,
+        HandPhase.RIVER,
+        HandPhase.SHOWDOWN,
     ]
 
 
@@ -56,7 +56,7 @@ def test_hand_fsm_invalid_event_is_ignored(caplog) -> None:
     with caplog.at_level("WARNING"):
         fsm.handle(BoardCardsRevealed(frame_idx=1, confidence=0.8, cards=["As", "Kd", "Qc"]))
 
-    assert fsm.state == HandState.IDLE
+    assert fsm.state == HandPhase.IDLE
     assert "Evento inválido para estado atual" in caplog.text
 
 

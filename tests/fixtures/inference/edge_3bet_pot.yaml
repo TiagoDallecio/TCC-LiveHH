@@ -1,0 +1,22 @@
+hand_id: edge_3bet_pot
+num_players: 4
+button_seat: 0
+seat_order: [V1, V2, V3, Hero]
+hero_id: Hero
+small_blind: 0.5
+big_blind: 1.0
+blinds: [[V2, 0.5], [V3, 1.0]]
+boards:
+  flop: [As, Kh, 7d]
+actions:
+  preflop:
+    - {player: Hero, action: raise, amount: 3.0}
+    - {player: V1, action: fold}
+    - {player: V2, action: fold}
+    - {player: V3, action: raise, amount: 10.0}
+    - {player: Hero, action: call, amount: 10.0}
+  flop:
+    - {player: V3, action: bet, amount: 12.0}
+    - {player: Hero, action: fold}
+showdown_reveals: {}
+winners: [V3]

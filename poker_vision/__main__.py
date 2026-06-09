@@ -12,6 +12,7 @@ from poker_vision.core.pipeline import Orchestrator
 from poker_vision.core.session import create_initial_context
 from poker_vision.core.video_stages import DebugVisualizerStage, FrameReaderStage
 from poker_vision.geometry.calibration_profile import CalibrationProfile
+from poker_vision.geometry.calibration_ui import run_calibration_ui
 from poker_vision.geometry.calibrator import TableCalibrator
 from poker_vision.geometry.zone_assigner import ZoneAssigner, draw_rois_on_frame
 from poker_vision.inference.board_tracker_stage import BoardTrackerStage
@@ -55,6 +56,25 @@ def main() -> None:
 
     replay_parser = subparsers.add_parser("replay", help="Executa replay determinístico de cenário YAML")
     replay_parser.add_argument("scenario", help="Caminho para o arquivo de cenário YAML")
+
+    corpus_parser = subparsers.add_parser("corpus", help="Constrói o corpus de testes (YAML + PokerStars)")
+    corpus_parser.add_argument(
+        "--pokerstars-dir", type=Path, default=None, help="Diretório com arquivos .txt do PokerStars"
+    )
+    corpus_parser.add_argument("--yaml-dir", type=Path, default=None, help="Diretório com fixtures YAML")
+    corpus_parser.add_argument("--output", type=Path, required=True, help="Caminho do JSON de saída")
+    corpus_parser.add_argument(
+        "--reroot", action="store_true", help="Ativa data augmentation (Hero em todos os assentos)"
+    )
+    corpus_parser.add_argument("--exclude-trivial", action="store_true", help="Ignora janelas sem ações")
+    corpus_parser.add_argument("--max-hands", type=int, default=None, help="Limite máximo de mãos a parsear")
+
+    # Comando: 'evaluate'
+    eval_parser = subparsers.add_parser("evaluate", help="Avalia o inferidor de ações contra o corpus gerado")
+    eval_parser.add_argument("--corpus", type=Path, required=True, help="Caminho para o test_corpus.json")
+    eval_parser.add_argument(
+        "--output-dir", type=Path, required=True, help="Pasta para salvar os gráficos e relatórios"
+    )
 
     args = parser.parse_args()
 
@@ -166,11 +186,120 @@ def main() -> None:
                 cap.release()
                 cv2.destroyAllWindows()
 
-            else:
-                from poker_vision.geometry.calibration_ui import run_calibration_ui
+        elif args.command == "corpus":
+            from poker_vision.inference.test_corpus import (
+                CorpusBuilder,
+                CorpusBuildOptions,
+                save_corpus,
+            )
 
-                video_path = Path(args.video) if hasattr(args, "video") and args.video else None
-                sys.exit(run_calibration_ui(video_path))
+            ps_files = list(args.pokerstars_dir.glob("*.txt")) if args.pokerstars_dir else []
+            yaml_files = list(args.yaml_dir.glob("*.yaml")) if args.yaml_dir else []
+
+            print("Construindo corpus de testes...")
+            builder = CorpusBuilder(
+                CorpusBuildOptions(
+                    reroot=args.reroot,
+                    include_trivial=not args.exclude_trivial,
+                    max_hands=args.max_hands,
+                )
+            )
+
+            cases = builder.build(pokerstars_files=ps_files, yaml_files=yaml_files)
+
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            save_corpus(cases, args.output)
+
+            print(f"Sucesso! {len(cases)} casos de teste gerados e salvos em {args.output}")
+
+            from collections import Counter
+
+            by_complexity = Counter(c.complexity for c in cases)
+            print("Distribuição por complexidade:", dict(by_complexity))
+
+        elif args.command == "evaluate":
+            from poker_vision.inference.evaluation.harness import run_from_corpus_file
+
+            print(f"Iniciando avaliação do corpus ({args.corpus}). Isso pode levar alguns segundos...")
+
+            out = run_from_corpus_file(args.corpus, args.output_dir)
+            m = out.metrics
+
+            print("\n" + "=" * 60)
+            print(f"Avaliação Concluída: {m.total_cases:,} janelas avaliadas, {m.total_actions:,} ações.")
+            print("=" * 60)
+            print(f"Acurácia de Sequência (Exata): {m.sequence_accuracy:.3%}")
+            print(f"Acurácia de Ação (Apenas tipo):{m.action_accuracy:.3%}")
+            print(f"Acurácia Jogador + Ação:       {m.player_action_accuracy:.3%}")
+            print(f"Erro Absoluto Médio (MAE):     {m.amount_mae:.3f} fichas/BB")
+            print(f"ECE (Erro de Calibração):      {m.calibration.expected_calibration_error:.4f}")
+            print(f"Falsos Positivos (Alucinação): {m.false_positive_rate_trivial:.3%} (Idealmente perto de 0%)")
+            print("-" * 60)
+            print("\n=== DIAGNÓSTICO PROFUNDO ===")
+
+            # Check 1: Confianças
+            from collections import Counter
+
+            all_confidences = [
+                round(c.predicted.confidence, 2) for r in out.per_case for c in r.per_action if c.predicted is not None
+            ]
+            top10 = Counter(all_confidences).most_common(10)
+            print("Top 10 valores de confiança emitidos:")
+            for conf, n in top10:
+                print(f"  {conf:.2f} -> {n:,} ações")
+
+            # Check 2: Racional (Quais funções estão rodando?)
+            rationales = Counter(
+                c.predicted.rationale for r in out.per_case for c in r.per_action if c.predicted is not None
+            )
+            print("\nDistribuição de Racional (Top 5):")
+            for rat, n in rationales.most_common(5):
+                print(f"  {n:>6,}  {rat}")
+
+            # Check 3: Configuração carregada
+            try:
+                from poker_vision.inference.opponent_action_inferencer import InferencerConfig
+
+                cfg = InferencerConfig()
+                print("\nConfiguração Carregada:")
+                print(f"  confidence_clean_check = {getattr(cfg, 'confidence_clean_check', 'NAO ENCONTRADO')}")
+                print(f"  occam_linear_weight    = {getattr(cfg, 'occam_linear_weight', 'NAO ENCONTRADO')}")
+            except Exception as e:
+                print(f"\nErro ao carregar InferencerConfig: {e}")
+            print("============================\n")
+            print("Gráficos e relatórios salvos em:")
+            for name, path in out.artifact_paths.items():
+                print(f"  - {name}: {path}")
+
+            # --- NOVO DIAGNÓSTICO (Limite de Informação) ---
+            print("\n=== DIAGNÓSTICO DE TETO DE INFORMAÇÃO ===")
+            from collections import Counter
+
+            fold_to_raise_constraint_counts = []
+            check_to_bet_constraint_counts = []
+
+            for r in out.per_case:
+                n_constrained = r.metadata.get("non_folders_count", 0)
+                for c in r.per_action:
+                    if c.expected is None or c.predicted is None:
+                        continue
+                    if c.expected.action == "fold" and c.predicted.action == "raise":
+                        fold_to_raise_constraint_counts.append(n_constrained)
+                    if c.expected.action == "check" and c.predicted.action == "bet":
+                        check_to_bet_constraint_counts.append(n_constrained)
+
+            print("Erros Fold -> Raise agrupados por # de restrições (Showdown) na janela:")
+            for n, count in sorted(Counter(fold_to_raise_constraint_counts).items()):
+                print(f"  {n} restrições: {count} erros")
+
+            print("\nErros Check -> Bet agrupados por # de restrições (Showdown) na janela:")
+            for n, count in sorted(Counter(check_to_bet_constraint_counts).items()):
+                print(f"  {n} restrições: {count} erros")
+            print("=================================================\n")
+
+        else:
+            video_path = Path(args.video) if hasattr(args, "video") and args.video else None
+            sys.exit(run_calibration_ui(video_path))
 
     except Exception as e:
         print(f"Falha crítica: {e}", file=sys.stderr)

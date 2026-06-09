@@ -16,6 +16,7 @@ dependencies = [
     "pyyaml",
     "ultralytics",
     "PyQt6>=6.6",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]

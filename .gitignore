@@ -30,6 +30,7 @@ venv/
 .ruff_cache/
 .coverage
 htmlcov/
+data/
 
 # Específicos do Projeto Poker Vision
 *.mp4

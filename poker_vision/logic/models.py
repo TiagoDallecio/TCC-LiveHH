@@ -3,7 +3,7 @@ Modelos de estado da mão (Issue #18)
 ======================================
 
 PlayerState  — snapshot do estado de um jogador em determinado momento.
-HandState    — snapshot completo da mesa em determinado momento.
+HandPhase    — snapshot completo da mesa em determinado momento.
 ActionLogEntry — registro imutável de uma ação realizada durante a mão.
 
 Todos os modelos são validados pelo Pydantic (v2) e suportam round-trip JSON.
@@ -71,3 +71,31 @@ class HandState(BaseModel):
     players: dict[str, PlayerState] = Field(default_factory=dict)
     action_log: list[ActionLogEntry] = Field(default_factory=list)
     quality: HandQuality = Field(default_factory=HandQuality)
+
+    @property
+    def current_bet(self) -> Decimal:
+        return self.current_bet_to_match
+
+    @property
+    def big_blind(self) -> Decimal:
+        return Decimal("1")
+
+    @property
+    def last_raise_size(self) -> Decimal:
+        return Decimal("0")
+
+    @property
+    def turn_pointer(self) -> Optional[str]:
+        if self.action_on_seat is None:
+            return None
+        for pid, player in self.players.items():
+            if getattr(player, "seat", None) == self.action_on_seat:
+                return pid
+        return None
+
+    @property
+    def action_order(self) -> tuple[str, ...]:
+        return ()
+
+    def legal_actions_for(self, player_id: str) -> frozenset[str]:
+        return frozenset({"fold", "check", "call", "bet", "raise", "all_in"})

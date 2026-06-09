@@ -23,7 +23,7 @@ from poker_vision.logic.models import HandState as HandSnapshot
 logger = logging.getLogger(__name__)
 
 
-class HandState(str, Enum):
+class HandPhase(str, Enum):
     IDLE = "idle"
     POSTING_BLINDS = "posting_blinds"
     DEALING_HOLE_CARDS = "dealing_hole_cards"
@@ -36,11 +36,11 @@ class HandState(str, Enum):
     ARCHIVED = "archived"
 
 
-_BOARD_SIZE_TO_STATE: dict[int, tuple[HandState, Street]] = {
-    0: (HandState.PREFLOP, "preflop"),
-    3: (HandState.FLOP, "flop"),
-    4: (HandState.TURN, "turn"),
-    5: (HandState.RIVER, "river"),
+_BOARD_SIZE_TO_STATE: dict[int, tuple[HandPhase, Street]] = {
+    0: (HandPhase.PREFLOP, "preflop"),
+    3: (HandPhase.FLOP, "flop"),
+    4: (HandPhase.TURN, "turn"),
+    5: (HandPhase.RIVER, "river"),
 }
 
 
@@ -48,25 +48,25 @@ class HandFSM:
     def __init__(self, ctx: TableContext, inferencer: OpponentActionInferencer) -> None:
         self.ctx = ctx
         self.inferencer = inferencer
-        self.state: HandState = HandState.IDLE
-        self.state_history: list[HandState] = [self.state]
+        self.state: HandPhase = HandPhase.IDLE
+        self.state_history: list[HandPhase] = [self.state]
         self.hand_state: HandSnapshot = HandSnapshot(street=ctx.current_street)
 
     def set_hand_state(self, hand_state: HandSnapshot) -> None:
         self.hand_state = hand_state
 
     def handle(self, event: VisualEvent | str) -> None:
-        handlers: dict[HandState, Callable[[VisualEvent | str], None]] = {
-            HandState.IDLE: self._handle_idle,
-            HandState.POSTING_BLINDS: self._handle_posting_blinds,
-            HandState.DEALING_HOLE_CARDS: self._handle_dealing_hole_cards,
-            HandState.PREFLOP: self._handle_preflop,
-            HandState.FLOP: self._handle_flop,
-            HandState.TURN: self._handle_turn,
-            HandState.RIVER: self._handle_river,
-            HandState.SHOWDOWN: self._handle_showdown,
-            HandState.SETTLING: self._handle_settling,
-            HandState.ARCHIVED: self._handle_archived,
+        handlers: dict[HandPhase, Callable[[VisualEvent | str], None]] = {
+            HandPhase.IDLE: self._handle_idle,
+            HandPhase.POSTING_BLINDS: self._handle_posting_blinds,
+            HandPhase.DEALING_HOLE_CARDS: self._handle_dealing_hole_cards,
+            HandPhase.PREFLOP: self._handle_preflop,
+            HandPhase.FLOP: self._handle_flop,
+            HandPhase.TURN: self._handle_turn,
+            HandPhase.RIVER: self._handle_river,
+            HandPhase.SHOWDOWN: self._handle_showdown,
+            HandPhase.SETTLING: self._handle_settling,
+            HandPhase.ARCHIVED: self._handle_archived,
         }
         handlers[self.state](event)
 
@@ -75,14 +75,14 @@ class HandFSM:
 
     def _handle_idle(self, event: VisualEvent | str) -> None:
         if isinstance(event, NewHandDetected):
-            self._transition(HandState.POSTING_BLINDS)
+            self._transition(HandPhase.POSTING_BLINDS)
             return
         self._ignore(event)
 
     def _handle_posting_blinds(self, event: VisualEvent | str) -> None:
         if isinstance(event, HoleCardsVisible):
-            self._transition(HandState.DEALING_HOLE_CARDS)
-            self._transition(HandState.PREFLOP)
+            self._transition(HandPhase.DEALING_HOLE_CARDS)
+            self._transition(HandPhase.PREFLOP)
             return
         self._ignore(event)
 
@@ -97,7 +97,7 @@ class HandFSM:
             self._apply_board_state(event.cards)
             return
         if self._is_showdown_event(event):
-            self._transition(HandState.SHOWDOWN)
+            self._transition(HandPhase.SHOWDOWN)
             return
         self._ignore(event)
 
@@ -106,7 +106,7 @@ class HandFSM:
             self._apply_board_state(event.cards)
             return
         if self._is_showdown_event(event):
-            self._transition(HandState.SHOWDOWN)
+            self._transition(HandPhase.SHOWDOWN)
             return
         self._ignore(event)
 
@@ -115,7 +115,7 @@ class HandFSM:
             self._apply_board_state(event.cards)
             return
         if self._is_showdown_event(event):
-            self._transition(HandState.SHOWDOWN)
+            self._transition(HandPhase.SHOWDOWN)
             return
         self._ignore(event)
 
@@ -124,25 +124,25 @@ class HandFSM:
             self._apply_board_state(event.cards)
             return
         if self._is_showdown_event(event):
-            self._transition(HandState.SHOWDOWN)
+            self._transition(HandPhase.SHOWDOWN)
             return
         self._ignore(event)
 
     def _handle_showdown(self, event: VisualEvent | str) -> None:
         if isinstance(event, ChipsAwarded):
-            self._transition(HandState.SETTLING)
+            self._transition(HandPhase.SETTLING)
             return
         self._ignore(event)
 
     def _handle_settling(self, event: VisualEvent | str) -> None:
         if isinstance(event, NewHandDetected):
-            self._transition(HandState.ARCHIVED)
+            self._transition(HandPhase.ARCHIVED)
             return
         self._ignore(event)
 
     def _handle_archived(self, event: VisualEvent | str) -> None:
         if isinstance(event, NewHandDetected):
-            self._transition(HandState.POSTING_BLINDS)
+            self._transition(HandPhase.POSTING_BLINDS)
             return
         self._ignore(event)
 
@@ -160,7 +160,7 @@ class HandFSM:
         self.ctx.current_street = next_street
         self._transition(next_state)
 
-    def _transition(self, new_state: HandState) -> None:
+    def _transition(self, new_state: HandPhase) -> None:
         if self.state == new_state:
             return
         self.state = new_state
