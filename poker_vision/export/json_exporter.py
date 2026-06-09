@@ -29,15 +29,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal, ROUND_HALF_EVEN
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Literal, Optional, Protocol
 
 from poker_vision.inference.opponent_action_inferencer import (
-    InferredAction,
     WindowAttribution,
 )
 from poker_vision.inference.table_context import ActionKind, Street
-
 
 # ============================================================
 # Type aliases & literals
@@ -81,9 +79,10 @@ class PlayerStateLike(Protocol):
 
 class ActionLogEntryLike(Protocol):
     """PURE domain entry — exactly four fields, nothing else."""
+
     street: Street
     player_id: str
-    action: ActionKind          # includes ActionKind.POST for blinds
+    action: ActionKind  # includes ActionKind.POST for blinds
     amount: Decimal
 
 
@@ -110,8 +109,9 @@ class ActionInferenceMetadata:
     responsible for populating this map as it records actions, since
     only the FSM knows which actions came from the inferencer.
     """
+
     confidence: Decimal = Decimal("1.0")  # 1.0 = observed directly, not inferred
-    window_id: Optional[str] = None       # set iff this action came from an ambiguous window
+    window_id: Optional[str] = None  # set iff this action came from an ambiguous window
 
 
 # ============================================================
@@ -171,17 +171,13 @@ def encode_money(amount: Decimal, minor_unit_scale: int = 100) -> int:
             f"encode_money requires Decimal, got {type(amount).__name__}. "
             "Convert at the FSM boundary, not here, to preserve precision."
         )
-    scaled = (amount * minor_unit_scale).quantize(
-        Decimal("1"), rounding=ROUND_HALF_EVEN
-    )
+    scaled = (amount * minor_unit_scale).quantize(Decimal("1"), rounding=ROUND_HALF_EVEN)
     return int(scaled)
 
 
 def encode_confidence(confidence: Decimal) -> str:
     """Serialize confidence as a 4-decimal string (Java DTO expects String)."""
-    quantized = Decimal(confidence).quantize(
-        Decimal("0.0001"), rounding=ROUND_HALF_EVEN
-    )
+    quantized = Decimal(confidence).quantize(Decimal("0.0001"), rounding=ROUND_HALF_EVEN)
     return f"{quantized:f}"
 
 
@@ -222,20 +218,14 @@ class SeatMapper:
         id_to_seat = {pid: p.seat for pid, p in hand.players.items()}
         seat_to_id = {seat: pid for pid, seat in id_to_seat.items()}
         if len(id_to_seat) != len(seat_to_id):
-            raise ValueError(
-                "Duplicate seat assignment in HandState.players — "
-                "every seat must be unique."
-            )
+            raise ValueError("Duplicate seat assignment in HandState.players — " "every seat must be unique.")
         return cls(_id_to_seat=id_to_seat, _seat_to_id=seat_to_id)
 
     def seat_of(self, player_id: str) -> int:
         try:
             return self._id_to_seat[player_id]
         except KeyError:
-            raise KeyError(
-                f"Unknown player_id {player_id!r}. "
-                f"Known: {sorted(self._id_to_seat)}"
-            ) from None
+            raise KeyError(f"Unknown player_id {player_id!r}. " f"Known: {sorted(self._id_to_seat)}") from None
 
     def id_of(self, seat: int) -> str:
         return self._seat_to_id[seat]
@@ -310,19 +300,17 @@ class StreetsBuilder:
 
     @staticmethod
     def build(
-            hand: HandStateLike,
-            seat_mapper: SeatMapper,
-            inference_meta: dict[int, ActionInferenceMetadata],
-            cfg: ExporterConfig,
+        hand: HandStateLike,
+        seat_mapper: SeatMapper,
+        inference_meta: dict[int, ActionInferenceMetadata],
+        cfg: ExporterConfig,
     ) -> tuple[list[dict], dict[int, str]]:
         """Returns (streets_array, log_position_to_action_id_map)."""
         streets_out: list[dict] = []
         log_pos_to_action_id: dict[int, str] = {}
 
         # Bucket the flat log by street, preserving order.
-        per_street: dict[Street, list[tuple[int, ActionLogEntryLike]]] = {
-            s: [] for s in StreetsBuilder.STREET_ORDER
-        }
+        per_street: dict[Street, list[tuple[int, ActionLogEntryLike]]] = {s: [] for s in StreetsBuilder.STREET_ORDER}
         for log_pos, entry in enumerate(hand.action_log):
             if entry.street in per_street:
                 per_street[entry.street].append((log_pos, entry))
@@ -338,20 +326,24 @@ class StreetsBuilder:
                 log_pos_to_action_id[log_pos] = action_id
 
                 meta = inference_meta.get(log_pos, ActionInferenceMetadata())
-                actions_out.append({
-                    "action_id": action_id,
-                    "actor_seat": seat_mapper.seat_of(entry.player_id),
-                    "kind": encode_action_kind(entry.action),
-                    "amount": encode_money(entry.amount, cfg.minor_unit_scale),
-                    "confidence": encode_confidence(meta.confidence),
-                    "window_id": meta.window_id,
-                })
+                actions_out.append(
+                    {
+                        "action_id": action_id,
+                        "actor_seat": seat_mapper.seat_of(entry.player_id),
+                        "kind": encode_action_kind(entry.action),
+                        "amount": encode_money(entry.amount, cfg.minor_unit_scale),
+                        "confidence": encode_confidence(meta.confidence),
+                        "window_id": meta.window_id,
+                    }
+                )
 
-            streets_out.append({
-                "street": street,
-                "board": encode_cards(StreetsBuilder._board_for_street(hand, street)),
-                "actions": actions_out,
-            })
+            streets_out.append(
+                {
+                    "street": street,
+                    "board": encode_cards(StreetsBuilder._board_for_street(hand, street)),
+                    "actions": actions_out,
+                }
+            )
 
         return streets_out, log_pos_to_action_id
 
@@ -374,6 +366,7 @@ class AmbiguousWindowRef:
     The FSM owns the (window_id, log_positions[], method) triple because
     only the FSM knows which actions a window produced.
     """
+
     window_id: str
     street: Street
     log_positions: list[int]
@@ -391,10 +384,10 @@ class AmbiguityBuilder:
 
     @staticmethod
     def build(
-            refs: list[AmbiguousWindowRef],
-            seat_mapper: SeatMapper,
-            log_pos_to_action_id: dict[int, str],
-            cfg: ExporterConfig,
+        refs: list[AmbiguousWindowRef],
+        seat_mapper: SeatMapper,
+        log_pos_to_action_id: dict[int, str],
+        cfg: ExporterConfig,
     ) -> list[dict]:
         out: list[dict] = []
         for ref in refs:
@@ -405,18 +398,19 @@ class AmbiguityBuilder:
             # Resolve log positions → action_ids. Skip silently if a
             # position never made it into the streets block (e.g. dropped
             # by the FSM); the window simply references fewer actions.
-            action_ids = [
-                log_pos_to_action_id[pos]
-                for pos in ref.log_positions
-                if pos in log_pos_to_action_id
-            ]
+            action_ids = [log_pos_to_action_id[pos] for pos in ref.log_positions if pos in log_pos_to_action_id]
             if not action_ids:
                 continue
 
             # Primary first, then alternatives (rank order from inferencer).
             all_sequences = [attr.primary] + list(attr.alternatives)
+
+            weights = getattr(attr, "weights", [])
+            if len(weights) != len(all_sequences):
+                weights = [1.0 / len(all_sequences)] * len(all_sequences)
             alternatives_out = [
                 {
+                    "weight": float(weights[i]),
                     "assignments": [
                         {
                             "actor_seat": seat_mapper.seat_of(a.player_id),
@@ -426,16 +420,18 @@ class AmbiguityBuilder:
                         for a in seq
                     ],
                 }
-                for seq in all_sequences
+                for i, seq in enumerate(all_sequences)
             ]
 
-            out.append({
-                "window_id": ref.window_id,
-                "street": ref.street,
-                "action_ids": action_ids,
-                "primary_selection_method": ref.primary_selection_method,
-                "alternatives": alternatives_out,
-            })
+            out.append(
+                {
+                    "window_id": ref.window_id,
+                    "street": ref.street,
+                    "action_ids": action_ids,
+                    "primary_selection_method": ref.primary_selection_method,
+                    "alternatives": alternatives_out,
+                }
+            )
 
         return out
 
@@ -445,10 +441,10 @@ class ResultBuilder:
 
     @staticmethod
     def build(
-            hand: HandStateLike,
-            winners: list[WinnerInfo],
-            seat_mapper: SeatMapper,
-            cfg: ExporterConfig,
+        hand: HandStateLike,
+        winners: list[WinnerInfo],
+        seat_mapper: SeatMapper,
+        cfg: ExporterConfig,
     ) -> dict:
         return {
             "pot_final": encode_money(hand.pot_final, cfg.minor_unit_scale),
@@ -472,6 +468,7 @@ class ResultBuilder:
 @dataclass(frozen=True)
 class ExportInputs:
     """Bundles every input the exporter needs."""
+
     hand: HandStateLike
     metadata: HandMetadata
     winners: list[WinnerInfo]
@@ -495,9 +492,7 @@ class HandHistoryExporter:
         streets_block, log_pos_to_action_id = StreetsBuilder.build(
             hand, seat_mapper, inputs.inference_metadata, self.cfg
         )
-        ambiguous_block = AmbiguityBuilder.build(
-            inputs.ambiguous_windows, seat_mapper, log_pos_to_action_id, self.cfg
-        )
+        ambiguous_block = AmbiguityBuilder.build(inputs.ambiguous_windows, seat_mapper, log_pos_to_action_id, self.cfg)
         result_block = ResultBuilder.build(hand, inputs.winners, seat_mapper, self.cfg)
 
         return {
@@ -512,6 +507,7 @@ class HandHistoryExporter:
 
     def export_to_json(self, inputs: ExportInputs) -> str:
         import json
+
         return json.dumps(self.export(inputs), ensure_ascii=False, indent=2)
 
 

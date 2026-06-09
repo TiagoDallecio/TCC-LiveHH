@@ -4,8 +4,9 @@ Validates canonical deduplication, primary selection tiebreakers, and
 the proper formation of WindowAttribution objects.
 """
 
-import pytest
 from decimal import Decimal
+
+import pytest
 
 from poker_vision.inference.opponent_action_inferencer import (
     InferredAction,
@@ -76,10 +77,7 @@ class TestPrimarySelection:
         seq_weak = [InferredAction("v1", "fold", Decimal("0"))]
         seq_strong = [InferredAction("v1", "call", Decimal("10"))]
 
-        scored = [
-            (seq_weak, 0.4),
-            (seq_strong, 0.9)
-        ]
+        scored = [(seq_weak, 0.4), (seq_strong, 0.9)]
 
         primary, alternatives, p_score, r_score = inferencer._rank_and_select_primary(scored)
 
@@ -94,10 +92,7 @@ class TestPrimarySelection:
         seq_a = [InferredAction("v2", "check", Decimal("0"))]
         seq_b = [InferredAction("v1", "check", Decimal("0"))]
 
-        scored = [
-            (seq_a, 0.8),
-            (seq_b, 0.8)  # Scores are equal
-        ]
+        scored = [(seq_a, 0.8), (seq_b, 0.8)]  # Scores are equal
 
         primary, alternatives, p_score, r_score = inferencer._rank_and_select_primary(scored)
 
@@ -133,7 +128,7 @@ class TestConfidenceLogicPreserved:
         primary_score = 0.9
         runner_up_score = 0.5
         pre_constraint_count = 4
-        post_constraint_count = 2 # Metade foi podada
+        post_constraint_count = 2  # Metade foi podada
 
         # Chama a nova função isolada
         confidence, was_reconciled = inferencer._compute_primary_confidence(
@@ -141,7 +136,7 @@ class TestConfidenceLogicPreserved:
             runner_up_score=runner_up_score,
             cfg=inferencer.cfg,
             pre_constraint_count=pre_constraint_count,
-            post_constraint_count=post_constraint_count
+            post_constraint_count=post_constraint_count,
         )
 
         assert was_reconciled is True
