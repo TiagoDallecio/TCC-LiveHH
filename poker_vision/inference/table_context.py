@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Literal
 
-ActionKind = Literal["fold", "check", "call", "bet", "raise", "all_in"]
+ActionKind = Literal["fold", "check", "call", "bet", "raise", "all_in", "post"]
 Street = Literal["preflop", "flop", "turn", "river"]
 
 _CONSTRAINT_FIELDS: frozenset[str] = frozenset(
