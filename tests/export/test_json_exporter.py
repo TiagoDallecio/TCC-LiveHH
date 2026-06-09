@@ -1,22 +1,18 @@
 """Tests for HandHistoryExporter. Mirrors test_window_attribution.py style."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
 import pytest
 
-from poker_vision.inference.opponent_action_inferencer import (
-    InferredAction,
-    WindowAttribution,
-)
 from poker_vision.export.json_exporter import (
     ActionInferenceMetadata,
     AmbiguityBuilder,
     AmbiguousWindowRef,
-    ExportInputs,
     ExporterConfig,
+    ExportInputs,
     HandHistoryExporter,
     HandMetadata,
     PlayersBuilder,
@@ -29,7 +25,10 @@ from poker_vision.export.json_exporter import (
     encode_money,
     make_action_id,
 )
-
+from poker_vision.inference.opponent_action_inferencer import (
+    InferredAction,
+    WindowAttribution,
+)
 
 # ============================================================
 # Fake domain models (match real shapes structurally)
@@ -49,6 +48,7 @@ class FakePlayer:
 @dataclass
 class FakeAction:
     """Pure domain — exactly 4 fields, like the real ActionLogEntry."""
+
     street: str
     player_id: str
     action: str
@@ -81,12 +81,11 @@ def simple_hand() -> FakeHand:
         players={
             "v1": FakePlayer("v1", 1, Decimal("200"), Decimal("199")),
             "v2": FakePlayer("v2", 2, Decimal("200"), Decimal("194")),
-            "hero": FakePlayer("hero", 6, Decimal("200"), Decimal("207"),
-                               is_hero=True, hole_cards=("Ah", "Kh")),
+            "hero": FakePlayer("hero", 6, Decimal("200"), Decimal("207"), is_hero=True, hole_cards=("Ah", "Kh")),
         },
         action_log=[
-            FakeAction("preflop", "v1", "post", Decimal("1")),   # SB
-            FakeAction("preflop", "v2", "post", Decimal("2")),   # BB
+            FakeAction("preflop", "v1", "post", Decimal("1")),  # SB
+            FakeAction("preflop", "v2", "post", Decimal("2")),  # BB
             FakeAction("preflop", "hero", "raise", Decimal("6")),
             FakeAction("preflop", "v1", "fold", Decimal("0")),
             FakeAction("preflop", "v2", "call", Decimal("4")),
@@ -159,10 +158,17 @@ class TestEncodeConfidence:
 
 
 class TestEncodeActionKind:
-    @pytest.mark.parametrize("python_kind,java_kind", [
-        ("fold", "FOLD"), ("check", "CHECK"), ("call", "CALL"),
-        ("bet", "BET"), ("raise", "RAISE"), ("post", "POST"),
-    ])
+    @pytest.mark.parametrize(
+        "python_kind,java_kind",
+        [
+            ("fold", "FOLD"),
+            ("check", "CHECK"),
+            ("call", "CALL"),
+            ("bet", "BET"),
+            ("raise", "RAISE"),
+            ("post", "POST"),
+        ],
+    )
     def test_known_kinds(self, python_kind, java_kind):
         assert encode_action_kind(python_kind) == java_kind
 
@@ -198,12 +204,16 @@ class TestSeatMapper:
 
     def test_duplicate_seat_rejected(self):
         bad = FakeHand(
-            "x", 1, (Decimal("1"), Decimal("2")),
+            "x",
+            1,
+            (Decimal("1"), Decimal("2")),
             players={
                 "a": FakePlayer("a", 1, Decimal("100"), Decimal("100")),
                 "b": FakePlayer("b", 1, Decimal("100"), Decimal("100")),
             },
-            action_log=[], pot_final=Decimal("0"), board_final=(),
+            action_log=[],
+            pot_final=Decimal("0"),
+            board_final=(),
         )
         with pytest.raises(ValueError, match="Duplicate seat"):
             SeatMapper.from_hand(bad)
@@ -250,8 +260,7 @@ class TestStreetsBuilder:
         m = SeatMapper.from_hand(simple_hand)
         streets, _ = StreetsBuilder.build(simple_hand, m, {}, ExporterConfig())
         preflop_ids = [a["action_id"] for a in streets[0]["actions"]]
-        assert preflop_ids == ["preflop-0", "preflop-1", "preflop-2",
-                               "preflop-3", "preflop-4"]
+        assert preflop_ids == ["preflop-0", "preflop-1", "preflop-2", "preflop-3", "preflop-4"]
 
     def test_log_position_map_covers_every_action(self, simple_hand):
         m = SeatMapper.from_hand(simple_hand)
@@ -305,10 +314,8 @@ class TestAmbiguityBuilder:
         m = SeatMapper.from_hand(simple_hand)
         _, log_map = StreetsBuilder.build(simple_hand, m, {}, ExporterConfig())
 
-        primary = [InferredAction("v1", "fold", Decimal("0")),
-                   InferredAction("v2", "call", Decimal("4"))]
-        alt = [InferredAction("v1", "call", Decimal("4")),
-               InferredAction("v2", "fold", Decimal("0"))]
+        primary = [InferredAction("v1", "fold", Decimal("0")), InferredAction("v2", "call", Decimal("4"))]
+        alt = [InferredAction("v1", "call", Decimal("4")), InferredAction("v2", "fold", Decimal("0"))]
         attr = WindowAttribution(primary=primary, alternatives=[alt])
         ref = AmbiguousWindowRef("w1", "preflop", [3, 4], attr)
 
@@ -345,21 +352,31 @@ class TestAmbiguityBuilder:
 
 class TestGoldenHand:
     def test_top_level_shape(self, simple_hand, metadata):
-        result = HandHistoryExporter().export(ExportInputs(
-            hand=simple_hand,
-            metadata=metadata,
-            winners=[WinnerInfo("hero", Decimal("18"), "High Card Ace")],
-        ))
+        result = HandHistoryExporter().export(
+            ExportInputs(
+                hand=simple_hand,
+                metadata=metadata,
+                winners=[WinnerInfo("hero", Decimal("18"), "High Card Ace")],
+            )
+        )
         assert set(result.keys()) == {
-            "schema_version", "metadata", "table", "players",
-            "streets", "ambiguous_windows", "result",
+            "schema_version",
+            "metadata",
+            "table",
+            "players",
+            "streets",
+            "ambiguous_windows",
+            "result",
         }
 
     def test_metadata_block_nested(self, simple_hand, metadata):
-        result = HandHistoryExporter().export(ExportInputs(
-            hand=simple_hand, metadata=metadata,
-            winners=[WinnerInfo("hero", Decimal("18"))],
-        ))
+        result = HandHistoryExporter().export(
+            ExportInputs(
+                hand=simple_hand,
+                metadata=metadata,
+                winners=[WinnerInfo("hero", Decimal("18"))],
+            )
+        )
         assert result["metadata"]["hand_id"] == "hand_001"
         assert result["metadata"]["table_id"] == "table_42"
         # hand_id is NOT at the root.
@@ -368,25 +385,33 @@ class TestGoldenHand:
     def test_deterministic(self, simple_hand, metadata):
         exporter = HandHistoryExporter()
         inputs = ExportInputs(
-            hand=simple_hand, metadata=metadata,
+            hand=simple_hand,
+            metadata=metadata,
             winners=[WinnerInfo("hero", Decimal("18"))],
         )
         assert exporter.export(inputs) == exporter.export(inputs)
 
     def test_result_block_money_as_long(self, simple_hand, metadata):
-        result = HandHistoryExporter().export(ExportInputs(
-            hand=simple_hand, metadata=metadata,
-            winners=[WinnerInfo("hero", Decimal("18"))],
-        ))
+        result = HandHistoryExporter().export(
+            ExportInputs(
+                hand=simple_hand,
+                metadata=metadata,
+                winners=[WinnerInfo("hero", Decimal("18"))],
+            )
+        )
         assert result["result"]["pot_final"] == 1800
         assert result["result"]["winners"][0]["amount_won"] == 1800
         assert result["result"]["winners"][0]["actor_seat"] == 6
 
     def test_export_to_json_is_valid_json(self, simple_hand, metadata):
         import json
-        s = HandHistoryExporter().export_to_json(ExportInputs(
-            hand=simple_hand, metadata=metadata,
-            winners=[WinnerInfo("hero", Decimal("18"))],
-        ))
+
+        s = HandHistoryExporter().export_to_json(
+            ExportInputs(
+                hand=simple_hand,
+                metadata=metadata,
+                winners=[WinnerInfo("hero", Decimal("18"))],
+            )
+        )
         parsed = json.loads(s)
         assert parsed["metadata"]["hand_id"] == "hand_001"

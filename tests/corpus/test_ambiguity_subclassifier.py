@@ -134,5 +134,11 @@ def test_crosstab_builds_correctly():
     ]
 
     crosstab = build_3d_crosstab(errors)
-    assert crosstab[ErrorMode.SAME_PLAYER_MAGNITUDE][(HandStructure.PREFLOP_FOLD_TO_OPEN, ConfusedActionPair.FOLD_VS_CALL)] == 2
-    assert crosstab[ErrorMode.SAME_PLAYER_MAGNITUDE][(HandStructure.POSTFLOP_HEADS_UP, ConfusedActionPair.CALL_VS_RAISE)] == 1
+    assert (
+        crosstab[ErrorMode.SAME_PLAYER_MAGNITUDE][(HandStructure.PREFLOP_FOLD_TO_OPEN, ConfusedActionPair.FOLD_VS_CALL)]
+        == 2
+    )
+    assert (
+        crosstab[ErrorMode.SAME_PLAYER_MAGNITUDE][(HandStructure.POSTFLOP_HEADS_UP, ConfusedActionPair.CALL_VS_RAISE)]
+        == 1
+    )

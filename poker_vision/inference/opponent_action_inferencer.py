@@ -105,6 +105,7 @@ class WindowAttribution:
 
     primary: list[InferredAction]
     alternatives: list[list[InferredAction]]
+    weights: list[float] = field(default_factory=list)
     enumeration_capped: bool = False
     deduplication_high_collision: bool = False
     was_reconciled: bool = False
@@ -196,7 +197,7 @@ class InferencerConfig:
     )
 
     # All-in heuristic: contribution > this multiple of current_bet -> all_in.
-    all_in_contribution_multiplier: Decimal = Decimal("3")
+    all_in_contribution_multiplier: Decimal = Decimal("5")
 
 
 # ---------------------------------------------------------------------------
@@ -649,7 +650,7 @@ class OpponentActionInferencer:
 
         # We want players from turn_pointer (inclusive) up to (but not
         # including) end_marker, all from active opponents.
-        if ctx.turn_pointer is  None:
+        if ctx.turn_pointer is None:
             return []
         start_after = self._prev_in_order(ctx.turn_pointer, ctx.seat_order)
         players = _players_between(
@@ -817,7 +818,11 @@ class OpponentActionInferencer:
             return WindowAttribution(primary=zero_delta_primary, alternatives=[])
 
         unconstrained = enumerate_action_sequences(
-            players, delta, ctx, self.cfg, frozenset(),
+            players,
+            delta,
+            ctx,
+            self.cfg,
+            frozenset(),
             max_alternatives=10_000,
         )
         unconstrained_count = len(unconstrained.sequences)
@@ -837,6 +842,14 @@ class OpponentActionInferencer:
         high_collision = len(constrained.sequences) > 0 and (collision_count / len(constrained.sequences)) > 0.5
 
         scored = [(seq, score_sequence(seq, ctx, self.cfg)) for seq in deduped]
+
+        sorted_pairs = sorted(scored, key=lambda pair: (-pair[1], _lexicographic_seat_key(pair[0])))
+
+        raw_scores = [pair[1] for pair in sorted_pairs]
+        max_score = raw_scores[0] if raw_scores else 0.0
+        exp_scores = [math.exp(s - max_score) for s in raw_scores]
+        sum_exp = sum(exp_scores)
+        weights = [es / sum_exp for es in exp_scores] if sum_exp > 0 else []
 
         primary, alternatives, primary_score, runner_up_score = self._rank_and_select_primary(scored)
 
@@ -867,6 +880,7 @@ class OpponentActionInferencer:
         return WindowAttribution(
             primary=primary,
             alternatives=alternatives,
+            weights=weights,
             enumeration_capped=constrained.enumeration_capped,
             deduplication_high_collision=high_collision,
             was_reconciled=was_reconciled,
