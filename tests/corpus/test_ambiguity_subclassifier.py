@@ -7,6 +7,7 @@ import pytest
 
 from poker_vision.corpus.ambiguity_subclassifier import (
     ConfusedActionPair,
+    ErrorMode,
     HandStructure,
     build_3d_crosstab,
     classify_action_pair,
@@ -26,7 +27,7 @@ from poker_vision.corpus.ambiguity_subclassifier import (
         ("call", "raise", ConfusedActionPair.CALL_VS_RAISE),
         ("bet", "check", ConfusedActionPair.CHECK_VS_BET),
         ("raise", "bet", ConfusedActionPair.BET_VS_RAISE),
-        ("fold", "raise", ConfusedActionPair.OTHER),  # cross-magnitude pair
+        ("fold", "raise", ConfusedActionPair.FOLD_VS_RAISE),  # cross-magnitude pair
     ],
 )
 def test_action_pair_classification(predicted, actual, expected):
@@ -100,6 +101,9 @@ def test_crosstab_builds_correctly():
             actual_kind="call",
             num_active_players=2,
             street="preflop",
+            error_mode=ErrorMode.SAME_PLAYER_MAGNITUDE,
+            predicted_player="p1",
+            actual_player="p1",
         ),
         SubclassifiedError(
             hand_id="h2",
@@ -110,6 +114,9 @@ def test_crosstab_builds_correctly():
             actual_kind="call",
             num_active_players=2,
             street="preflop",
+            error_mode=ErrorMode.SAME_PLAYER_MAGNITUDE,
+            predicted_player="p1",
+            actual_player="p1",
         ),
         SubclassifiedError(
             hand_id="h3",
@@ -120,9 +127,12 @@ def test_crosstab_builds_correctly():
             actual_kind="raise",
             num_active_players=2,
             street="flop",
+            error_mode=ErrorMode.SAME_PLAYER_MAGNITUDE,
+            predicted_player="p1",
+            actual_player="p1",
         ),
     ]
 
     crosstab = build_3d_crosstab(errors)
-    assert crosstab[(HandStructure.PREFLOP_FOLD_TO_OPEN, ConfusedActionPair.FOLD_VS_CALL)] == 2
-    assert crosstab[(HandStructure.POSTFLOP_HEADS_UP, ConfusedActionPair.CALL_VS_RAISE)] == 1
+    assert crosstab[ErrorMode.SAME_PLAYER_MAGNITUDE][(HandStructure.PREFLOP_FOLD_TO_OPEN, ConfusedActionPair.FOLD_VS_CALL)] == 2
+    assert crosstab[ErrorMode.SAME_PLAYER_MAGNITUDE][(HandStructure.POSTFLOP_HEADS_UP, ConfusedActionPair.CALL_VS_RAISE)] == 1

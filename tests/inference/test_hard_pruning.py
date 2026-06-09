@@ -59,7 +59,7 @@ def test_flag_on_prunes_invalid_player_order():
     with patch.object(opponent_action_inferencer, "ENABLE_FSM_HARD_PRUNING", True):
         sequences = enumerate_action_sequences(players_wrong_order, delta_pot, ctx, cfg)
 
-    assert len(sequences) == 0
+    assert len(sequences.sequences) == 0
 
 
 def test_flag_on_respects_legal_actions():
@@ -78,7 +78,7 @@ def test_flag_on_respects_legal_actions():
     with patch.object(opponent_action_inferencer, "ENABLE_FSM_HARD_PRUNING", True):
         sequences = enumerate_action_sequences(players, delta_pot, ctx, cfg)
 
-    for seq in sequences:
+    for seq in sequences.sequences:
         hero_actions = [a for a in seq if a.player_id == "hero"]
         for a in hero_actions:
             assert a.action in {"check", "bet"}
@@ -95,4 +95,4 @@ def test_flag_off_ignores_invalid_player_order():
     with patch.object(opponent_action_inferencer, "ENABLE_FSM_HARD_PRUNING", False):
         sequences = enumerate_action_sequences(players_wrong_order, delta_pot, ctx, cfg)
 
-    assert len(sequences) > 0
+    assert len(sequences.sequences) > 0

@@ -54,9 +54,11 @@ def compute_future_knowledge(
     # Signal 1: any player who acts after the window did not fold in the window
     future_actions = all_actions[window_anchor_index + 1 :]
     for action in future_actions:
-        if action.player_id not in non_folders:
+        action_kind = getattr(action, "action", getattr(action, "kind", "unknown"))
+
+        if action_kind not in ("fold", "unknown"):
             non_folders.add(action.player_id)
-            evidence[action.player_id] = f"took action '{getattr(action, 'action', 'unknown')}' after window"
+            evidence[action.player_id] = f"took action '{action_kind}' after window"
 
     # Signal 2: showdown participants (subset of Signal 1 in most cases,
     # but explicit because showdown can occur after all action ends)

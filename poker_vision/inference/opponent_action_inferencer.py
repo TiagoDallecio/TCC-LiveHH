@@ -90,6 +90,36 @@ class InferredAction:
     metadata: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class EnumerationResult:
+    """Output of enumerate_action_sequences with truncation metadata."""
+
+    sequences: list[list[InferredAction]]
+    enumeration_capped: bool = False
+    raw_count_before_cap: int = 0
+
+
+@dataclass(frozen=True)
+class WindowAttribution:
+    """Full attribution result for one anchor-bounded window."""
+
+    primary: list[InferredAction]
+    alternatives: list[list[InferredAction]]
+    enumeration_capped: bool = False
+    deduplication_high_collision: bool = False
+    was_reconciled: bool = False
+    constraint_relaxed: bool = False
+
+    @property
+    def is_ambiguous(self) -> bool:
+        return len(self.alternatives) > 0
+
+    @property
+    def consistent_set_size(self) -> int:
+        """Total number of consistent sequences (primary + alternatives)."""
+        return 1 + len(self.alternatives) if self.primary else 0
+
+
 # ---------------------------------------------------------------------------
 # 2. Configuration (all tunable hyperparameters)
 # ---------------------------------------------------------------------------
@@ -311,17 +341,17 @@ def enumerate_action_sequences(
     ctx: TableContext,
     cfg: InferencerConfig,
     non_folders: frozenset[str] = frozenset(),
-) -> list[list[InferredAction]]:
+    *,
+    max_alternatives: int = 16,
+) -> EnumerationResult:
     """
     DFS through legal action sequences whose contributions sum to delta_pot.
-
-    Each returned sequence has len(players) actions, one per player, in turn
-    order. Pruned aggressively using poker legality.
-    :param non_folders:
+    Caps enumeration at `max_alternatives` consistent sequences.
     """
     results: list[list[InferredAction]] = []
+    capped = False
+
     if len(players) > cfg.max_sequence_depth:
-        # Beam: truncate to first N (the FSM should re-anchor in practice).
         players = players[: cfg.max_sequence_depth]
 
     contribs0 = dict(ctx.contributions_this_street)
@@ -334,9 +364,15 @@ def enumerate_action_sequences(
         contribs: dict[str, Decimal],
         seq: list[InferredAction],
     ) -> None:
+        nonlocal capped
+        if capped:
+            return  # short-circuit all branches once cap is hit
+
         if idx == len(players):
             if remaining == 0:
                 results.append([InferredAction(a.player_id, a.action, a.amount) for a in seq])
+                if len(results) >= max_alternatives:
+                    capped = True
             return
 
         player = players[idx]
@@ -360,6 +396,8 @@ def enumerate_action_sequences(
             hypothesis_order.append("fold")
 
         for action in hypothesis_order:
+            if capped:
+                return
             if not _action_is_fsm_legal(player, action, ctx):
                 continue
 
@@ -392,12 +430,13 @@ def enumerate_action_sequences(
                     cfg=cfg,
                 )
                 for contribution in raise_options:
+                    if capped:
+                        return
                     new_raise_to = pc + contribution
                     new_last_raise = new_raise_to - current_bet
                     new_contribs = dict(contribs)
                     new_contribs[player] = new_raise_to
 
-                    # Heurística de ação (Bet, Raise ou All-in)
                     action_kind: ActionKind = "raise"
                     if (
                         current_bet > 0
@@ -413,7 +452,39 @@ def enumerate_action_sequences(
                     seq.pop()
 
     dfs(0, delta_pot, ctx.current_bet, ctx.last_raise_size, contribs0, [])
-    return results
+    return EnumerationResult(
+        sequences=results,
+        enumeration_capped=capped,
+        raw_count_before_cap=len(results),
+    )
+
+
+def _canonical_key(sequence: list[InferredAction]) -> tuple:
+    """Canonical equivalence key for a sequence (per-player outcomes match)."""
+    # Usamos .normalize() para garantir que Decimal("2") e Decimal("2.00") têm a mesma chave
+    return tuple(sorted((a.player_id, a.action, str(a.amount.normalize())) for a in sequence))
+
+
+def _deduplicate_sequences(
+    sequences: list[list[InferredAction]],
+) -> tuple[list[list[InferredAction]], int]:
+    """Deduplicate sequences by canonical per-player outcome."""
+    seen: dict[tuple, int] = {}
+    unique: list[list[InferredAction]] = []
+    collisions = 0
+    for seq in sequences:
+        key = _canonical_key(seq)
+        if key in seen:
+            collisions += 1
+            continue
+        seen[key] = len(unique)
+        unique.append(seq)
+    return unique, collisions
+
+
+def _lexicographic_seat_key(sequence: list[InferredAction]) -> tuple:
+    """Deterministic tiebreaker key for primary selection."""
+    return tuple((a.player_id, a.action, str(a.amount.normalize())) for a in sequence)
 
 
 # ---------------------------------------------------------------------------
@@ -578,8 +649,9 @@ class OpponentActionInferencer:
 
         # We want players from turn_pointer (inclusive) up to (but not
         # including) end_marker, all from active opponents.
-        if ctx.turn_pointer is not None:
-            start_after = self._prev_in_order(ctx.turn_pointer, ctx.seat_order)
+        if ctx.turn_pointer is  None:
+            return []
+        start_after = self._prev_in_order(ctx.turn_pointer, ctx.seat_order)
         players = _players_between(
             start_after=start_after,
             end_before=end_marker,
@@ -672,24 +744,37 @@ class OpponentActionInferencer:
             )
         return f"Δpot=${delta}; unique legal sequence; score={top_score:.3f}"
 
-    def _score_with_confidence(
+    def _rank_and_select_primary(
         self,
-        sequences: list[tuple[list[InferredAction], float]],
+        scored_sequences: list[tuple[list[InferredAction], float]],
+    ) -> tuple[list[InferredAction], list[list[InferredAction]], float, float]:
+        if not scored_sequences:
+            return [], [], 0.0, 0.0
+
+        sorted_pairs = sorted(
+            scored_sequences,
+            key=lambda pair: (-pair[1], _lexicographic_seat_key(pair[0])),
+        )
+
+        primary, primary_score = sorted_pairs[0]
+        alternatives = [seq for seq, _ in sorted_pairs[1:]]
+        runner_up_score = sorted_pairs[1][1] if len(sorted_pairs) > 1 else primary_score - 1.0
+
+        return primary, alternatives, primary_score, runner_up_score
+
+    def _compute_primary_confidence(
+        self,
+        primary_score: float,
+        runner_up_score: float,
         cfg: InferencerConfig,
-        pre_constraint_count: int = 0,
-    ) -> list[InferredAction]:
-        if not sequences:
-            return []
-
-        sequences.sort(key=lambda s: s[1], reverse=True)
-        best_seq, best_score = sequences[0]
-        runner_up_score = sequences[1][1] if len(sequences) > 1 else best_score - 1.0
-
-        margin = max(0.0, best_score - runner_up_score)
-        was_reconciled = pre_constraint_count > len(sequences)  # <-- Identifica se fomos salvos pelo Showdown
+        pre_constraint_count: int,
+        post_constraint_count: int,
+    ) -> tuple[float, bool]:
+        margin = max(0.0, primary_score - runner_up_score)
+        was_reconciled = pre_constraint_count > post_constraint_count
 
         if was_reconciled:
-            pruning_ratio = 1.0 - (len(sequences) / pre_constraint_count)
+            pruning_ratio = 1.0 - (post_constraint_count / pre_constraint_count)
             margin += getattr(cfg, "constraint_pruning_margin_weight", 1.5) * pruning_ratio
 
         confidence = min(
@@ -701,57 +786,123 @@ class OpponentActionInferencer:
             confidence -= getattr(cfg, "reconciliation_dampening", 0.15)
             confidence = max(0.1, confidence)
 
-        for a in best_seq:
-            if getattr(a, "confidence", 0.0) < getattr(cfg, "confidence_forced_action", 0.97):
-                a.confidence = confidence
+        return confidence, was_reconciled
 
-        return best_seq
+    def _apply_confidence_to_primary(
+        self,
+        primary: list[InferredAction],
+        confidence: float,
+        cfg: InferencerConfig,
+    ) -> None:
+        forced_threshold = getattr(cfg, "confidence_forced_action", 0.97)
+        for action in primary:
+            if getattr(action, "confidence", 0.0) < forced_threshold:
+                action.confidence = confidence
 
-    def _attribute_window(
-        self, start: AnchorEvent, end: AnchorEvent, ctx: TableContext, non_folders: frozenset[str] = frozenset()
-    ) -> list[InferredAction]:
+    def _attribute_window_full(
+        self,
+        start: AnchorEvent,
+        end: AnchorEvent,
+        ctx: TableContext,
+        non_folders: frozenset[str] = frozenset(),
+    ) -> WindowAttribution:
         delta = self._sanitized_delta(start, end, ctx)
         players = self._window_players(start, end, ctx)
 
         if not players:
-            return []
+            return WindowAttribution(primary=[], alternatives=[])
 
         if delta == 0 or abs(delta) <= getattr(self.cfg, "zero_delta_epsilon", Decimal("0.5")):
-            return self._all_zero_delta(players, ctx)
+            zero_delta_primary = self._all_zero_delta(players, ctx)
+            return WindowAttribution(primary=zero_delta_primary, alternatives=[])
 
-        unconstrained_count = len(enumerate_action_sequences(players, delta, ctx, self.cfg, frozenset()))
+        unconstrained = enumerate_action_sequences(
+            players, delta, ctx, self.cfg, frozenset(),
+            max_alternatives=10_000,
+        )
+        unconstrained_count = len(unconstrained.sequences)
 
-        candidates = enumerate_action_sequences(players, delta, ctx, self.cfg, non_folders=non_folders)
+        constrained = enumerate_action_sequences(players, delta, ctx, self.cfg, non_folders=non_folders)
 
         constraint_relaxed = False
-        if not candidates and non_folders:
-            candidates = enumerate_action_sequences(players, delta, ctx, self.cfg, non_folders=frozenset())
+        if not constrained.sequences and non_folders:
+            constrained = enumerate_action_sequences(players, delta, ctx, self.cfg, non_folders=frozenset())
             constraint_relaxed = True
 
-        if not candidates:
-            return self._fallback(players, delta, ctx)
+        if not constrained.sequences:
+            fallback = self._fallback(players, delta, ctx)
+            return WindowAttribution(primary=fallback, alternatives=[])
 
-        scored = [(seq, score_sequence(seq, ctx, self.cfg)) for seq in candidates]
+        deduped, collision_count = _deduplicate_sequences(constrained.sequences)
+        high_collision = len(constrained.sequences) > 0 and (collision_count / len(constrained.sequences)) > 0.5
 
-        best_seq = self._score_with_confidence(scored, self.cfg, pre_constraint_count=unconstrained_count)
+        scored = [(seq, score_sequence(seq, ctx, self.cfg)) for seq in deduped]
 
-        # TASK 4.5.9: Rastreabilidade
-        rationale = self._explain(best_seq, scored, delta)
-        was_reconciled = unconstrained_count > len(candidates)
+        primary, alternatives, primary_score, runner_up_score = self._rank_and_select_primary(scored)
 
+        confidence, was_reconciled = self._compute_primary_confidence(
+            primary_score=primary_score,
+            runner_up_score=runner_up_score,
+            cfg=self.cfg,
+            pre_constraint_count=unconstrained_count,
+            post_constraint_count=len(constrained.sequences),
+        )
+        self._apply_confidence_to_primary(primary, confidence, self.cfg)
+
+        rationale = self._explain(primary, scored, delta)
         if constraint_relaxed:
             rationale += " [CONSTRAINT RELAXED: Over-pruned]"
         elif was_reconciled:
             rationale += " [RECONCILED: DFS pruned via Future Showdown]"
 
-        for a in best_seq:
-            a.rationale = rationale
-            if not hasattr(a, "metadata"):
-                a.metadata = {}
+        for action in primary:
+            action.rationale = rationale
+            if not hasattr(action, "metadata"):
+                action.metadata = {}
             if was_reconciled:
-                a.metadata["reconciled_via_showdown"] = True
+                action.metadata["reconciled_via_showdown"] = True
+            if constraint_relaxed:
+                action.metadata["constraint_relaxed"] = True
 
-        return best_seq
+        return WindowAttribution(
+            primary=primary,
+            alternatives=alternatives,
+            enumeration_capped=constrained.enumeration_capped,
+            deduplication_high_collision=high_collision,
+            was_reconciled=was_reconciled,
+            constraint_relaxed=constraint_relaxed,
+        )
+
+    def _attribute_window(
+        self,
+        start: AnchorEvent,
+        end: AnchorEvent,
+        ctx: TableContext,
+        non_folders: frozenset[str] = frozenset(),
+    ) -> list[InferredAction]:
+        """Legacy entry point. Returns primary only for FSM compatibility."""
+        return self._attribute_window_full(start, end, ctx, non_folders=non_folders).primary
+
+    def on_anchor_with_alternatives(
+        self,
+        anchor: AnchorEvent,
+        ctx: TableContext,
+        non_folders: frozenset[str] = frozenset(),
+    ) -> Optional[WindowAttribution]:
+        """Like on_anchor, but returns the full WindowAttribution including alternatives."""
+        snapshot = ctx.snapshot_constraints()
+        try:
+            if self._pending is None:
+                self._pending = anchor
+                return None
+
+            try:
+                attribution = self._attribute_window_full(self._pending, anchor, ctx, non_folders=non_folders)
+            finally:
+                self._pending = anchor
+            return attribution
+        finally:
+            ctx.assert_constraints_match(snapshot, where="on_anchor_with_alternatives")
 
 
 # ---------------------------------------------------------------------------
@@ -786,4 +937,6 @@ __all__ = [
     "score_sequence",
     "compute_window_confidence",
     "per_action_confidence",
+    "EnumerationResult",
+    "WindowAttribution",
 ]
