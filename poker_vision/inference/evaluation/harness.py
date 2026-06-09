@@ -71,7 +71,7 @@ def run_evaluation(
 
     chart_paths = {
         "reliability": output_dir / "reliability_diagram.png",
-        "confusion": output_dir / "confusion_matrix.png",
+        "confusion": output_dir / "confusion_matrix_run2.png",
         "complexity": output_dir / "accuracy_by_complexity.png",
         "villains": output_dir / "accuracy_by_num_villains.png",
     }

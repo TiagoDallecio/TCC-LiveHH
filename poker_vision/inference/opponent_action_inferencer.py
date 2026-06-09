@@ -24,9 +24,32 @@ from typing import Optional
 
 from poker_vision.inference.table_context import ActionKind, Street, TableContext
 
-# ---------------------------------------------------------------------------
-# 1. Public data model
-# ---------------------------------------------------------------------------
+ENABLE_FSM_HARD_PRUNING = False
+
+
+class FSMCandidateDisagreement(RuntimeError):
+    def __init__(self, *, event_index: int, expected_actor: str, candidates: list[str]) -> None:
+        self.event_index = event_index
+        self.expected_actor = expected_actor
+        self.candidates = candidates
+        super().__init__(
+            f"FSM expects actor {expected_actor!r} at event {event_index} " f"but candidates are {candidates!r}."
+        )
+
+
+_INFERENCE_METRICS: dict[str, int] = {
+    "horizon_overflow": 0,
+    "fsm_candidate_disagreement": 0,
+}
+
+
+def reset_inference_metrics() -> None:
+    for k in _INFERENCE_METRICS:
+        _INFERENCE_METRICS[k] = 0
+
+
+def get_inference_metrics() -> dict[str, int]:
+    return dict(_INFERENCE_METRICS)
 
 
 class AnchorType(str, Enum):
@@ -238,6 +261,50 @@ def _legal_raise_contributions(
     return sorted(candidates)
 
 
+def _resolve_actor_for_event(
+    event_index: int,
+    ctx: TableContext,
+    *,
+    fallback_candidates: list[str],
+    strict: bool = False,
+) -> list[str]:
+    if not ENABLE_FSM_HARD_PRUNING:
+        return fallback_candidates
+    if not ctx.has_fsm_state:
+        return fallback_candidates
+    if event_index >= len(ctx.action_order):
+        _INFERENCE_METRICS["horizon_overflow"] += 1
+        return fallback_candidates
+
+    expected_actor = ctx.action_order[event_index]
+    if expected_actor in fallback_candidates:
+        return [expected_actor]
+
+    _INFERENCE_METRICS["fsm_candidate_disagreement"] += 1
+    if strict:
+        raise FSMCandidateDisagreement(
+            event_index=event_index,
+            expected_actor=expected_actor,
+            candidates=fallback_candidates,
+        )
+    return fallback_candidates
+
+
+def _action_is_fsm_legal(
+    player: str,
+    action: ActionKind,
+    ctx: TableContext,
+) -> bool:
+    """Check whether an action kind is FSM-legal for a player.
+
+    Uses TableContext.is_action_legal which returns True for players
+    with no constraint entry (lenient default), so this is safe to call
+    even when the FSM hasn't populated legal_actions_per_player."""
+    if not ENABLE_FSM_HARD_PRUNING:
+        return True
+    return ctx.is_action_legal(player, action)
+
+
 def enumerate_action_sequences(
     players: list[str],
     delta_pot: Decimal,
@@ -273,6 +340,13 @@ def enumerate_action_sequences(
             return
 
         player = players[idx]
+
+        candidate_players = _resolve_actor_for_event(
+            event_index=idx, ctx=ctx, fallback_candidates=players, strict=False
+        )
+        if player not in candidate_players:
+            return
+
         pc = contribs.get(player, Decimal(0))
         to_call = current_bet - pc
         fold_allowed = player not in non_folders
@@ -286,6 +360,9 @@ def enumerate_action_sequences(
             hypothesis_order.append("fold")
 
         for action in hypothesis_order:
+            if not _action_is_fsm_legal(player, action, ctx):
+                continue
+
             if action == "fold":
                 seq.append(InferredAction(player, "fold", Decimal(0)))
                 dfs(idx + 1, remaining, current_bet, last_raise, contribs, seq)

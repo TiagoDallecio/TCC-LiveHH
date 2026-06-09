@@ -584,6 +584,8 @@ def extract_windows_for_hero(
                     state.last_raise_size = raise_to - state.current_bet
                 state.current_bet = max(state.current_bet, raise_to)
 
+            state.turn_pointer = _next_active(pa.player_id, seat_order, state.active_players)
+
             if pa.player_id == hero_id:
                 hero_kind = cast(ActionKind, pa.action)
                 if hero_kind == "all_in":
@@ -616,8 +618,6 @@ def extract_windows_for_hero(
                         is_inferred=False,
                     )
                 )
-
-            state.turn_pointer = _next_active(pa.player_id, seat_order, state.active_players)
 
     # --- Final window: hand_end anchor ---
     anchor = AnchorEvent(
@@ -696,6 +696,8 @@ class CorpusBuilder:
 def _serialize_decimal(obj):
     if isinstance(obj, Decimal):
         return str(obj)
+    if isinstance(obj, (set, frozenset)):
+        return list(obj)
     raise TypeError(f"Not serializable: {type(obj)}")
 
 
@@ -746,6 +748,13 @@ def _ctx_to_dict(ctx: TableContext) -> dict:
 
 
 def _ctx_from_dict(d: dict) -> TableContext:
+    action_order = tuple(d.get("action_order", ()))
+
+    legal_raw = d.get("legal_actions_per_player", {})
+    legal_actions = {k: frozenset(v) for k, v in legal_raw.items()}
+
+    non_folders = frozenset(d.get("non_folders", []))
+
     return TableContext(
         num_players=d["num_players"],
         button_seat=d["button_seat"],
@@ -759,6 +768,9 @@ def _ctx_from_dict(d: dict) -> TableContext:
         pot=Decimal(d["pot"]),
         contributions_this_street={k: Decimal(v) for k, v in d["contributions_this_street"].items()},
         hero_id=d["hero_id"],
+        action_order=action_order,
+        legal_actions_per_player=legal_actions,
+        non_folders=non_folders,
     )
 
 
