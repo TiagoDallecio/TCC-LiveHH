@@ -1,36 +1,30 @@
 import argparse
 import json
-import sys
-from datetime import datetime
-from decimal import Decimal
-from pathlib import Path
-from typing import Optional
-
 import requests
-
-from poker_vision.export.json_exporter import (
-    ExporterConfig,
-    ExportInputs,
-    HandHistoryExporter,
-    HandMetadata,
-    HandStateLike,
-    WinnerInfo,
-)
-from poker_vision.inference.opponent_action_inferencer import (
-    AnchorEvent,
-    AnchorType,
-    InferencerConfig,
-    OpponentActionInferencer,
-    WindowAttribution,
-)
-from poker_vision.inference.table_context import TableContext
+import sys
+from decimal import Decimal
+from datetime import datetime
+from pathlib import Path
 
 # Importações REAIS do seu repositório
 from poker_vision.logic.models import ActionLogEntry
+from poker_vision.export.json_exporter import (
+    HandHistoryExporter, ExportInputs, HandMetadata, WinnerInfo, ExporterConfig, HandStateLike
+)
+from poker_vision.inference.table_context import TableContext
+from poker_vision.inference.opponent_action_inferencer import (
+    OpponentActionInferencer, InferencerConfig, AnchorEvent, AnchorType
+)
 
 # ============================================================================
-# ADAPTADORES PARA O EXPORTER
+# BLINDAGEM DE MOCKS (Garante que o json_exporter não ignore a Ambiguidade)
 # ============================================================================
+class MockWindowAttribution:
+    def __init__(self, primary, alternatives, weights):
+        self.primary = primary
+        self.alternatives = alternatives
+        self.weights = weights
+        self.is_ambiguous = True # Força o exportador a não ignorar a janela!
 
 class MockAmbiguousWindowRef:
     def __init__(self, window_id, street, log_positions, attribution):
@@ -39,20 +33,9 @@ class MockAmbiguousWindowRef:
         self.log_positions = log_positions
         self.attribution = attribution
         self.primary_selection_method = "dfs_occam"
-        self.is_ambiguous = True
 
 class MockHandStateForExport(HandStateLike):
-    def __init__(
-        self,
-        hero_id: str,
-        button_seat: int,
-        blinds: tuple[Decimal, Decimal],
-        players: dict,
-        action_log: list[ActionLogEntry],
-        pot_final: Decimal,
-        board_final: tuple[str, ...],
-        ambiguous_windows: list = None
-    ):
+    def __init__(self, hero_id, button_seat, blinds, players, action_log, pot_final, board_final, ambiguous_windows=None):
         self.hero_id = hero_id
         self.button_seat = button_seat
         self.blinds = blinds
@@ -62,17 +45,8 @@ class MockHandStateForExport(HandStateLike):
         self.board_final = board_final
         self.ambiguous_windows = ambiguous_windows or []
 
-
 class MockPlayerForExport:
-    def __init__(
-        self,
-        player_id: str,
-        seat: int,
-        stack_initial: Decimal,
-        stack_final: Decimal,
-        is_hero: bool,
-        hole_cards: Optional[tuple[str, ...]] = None,
-    ):
+    def __init__(self, player_id, seat, stack_initial, stack_final, is_hero, hole_cards=None):
         self.player_id = player_id
         self.seat = seat
         self.stack_initial = stack_initial
@@ -80,61 +54,32 @@ class MockPlayerForExport:
         self.is_hero = is_hero
         self.hole_cards = hole_cards or tuple()
 
-
 # ============================================================================
 # DEMO COMMAND IMPLEMENTATION
 # ============================================================================
 
-
 def demo_command(args: argparse.Namespace) -> None:
-    print("\n" + "=" * 70)
-    print("POKER VISION DEMO - End-to-End Pipeline (Com DFS Inferencer)")
-    print("=" * 70 + "\n")
+    print("\n" + "="*70)
+    print(f"POKER VISION DEMO - Pipeline TCC (Estratégia: {args.strategy.upper()})")
+    print("="*70 + "\n")
 
     # ------------------------------------------------------------------------
-    # PASSO 1: Configurando o Estado Físico (Simulação do CV/YOLO)
+    # PASSO 1 & 2: Mesa, Jogadores e FSM State
     # ------------------------------------------------------------------------
-    print(" Passo 1: Configurando a mesa e jogadores...")
-
     players_dict = {
-        "Hero": MockPlayerForExport(
-            player_id="Hero",
-            seat=0,
-            stack_initial=Decimal("1000"),
-            stack_final=Decimal("992"),
-            is_hero=True,
-            hole_cards=("AS", "KS"),
-        ),
-        "Opp1": MockPlayerForExport(
-            player_id="Opp1", seat=1, stack_initial=Decimal("1000"), stack_final=Decimal("999.5"), is_hero=False
-        ),
-        "Opp2": MockPlayerForExport(
-            player_id="Opp2", seat=2, stack_initial=Decimal("1000"), stack_final=Decimal("999"), is_hero=False
-        ),
-        "Opp3": MockPlayerForExport(
-            player_id="Opp3", seat=3, stack_initial=Decimal("1000"), stack_final=Decimal("999"), is_hero=False
-        ),
-        "Opp4": MockPlayerForExport(
-            player_id="Opp4", seat=4, stack_initial=Decimal("1000"), stack_final=Decimal("1000"), is_hero=False
-        ),
-        "Opp5": MockPlayerForExport(
-            player_id="Opp5", seat=5, stack_initial=Decimal("1000"), stack_final=Decimal("1000"), is_hero=False
-        ),
+        "Hero": MockPlayerForExport("Hero", 0, Decimal("1000"), Decimal("992"), True, ("AS", "KS")),
+        "Opp1": MockPlayerForExport("Opp1", 1, Decimal("1000"), Decimal("999.5"), False),
+        "Opp2": MockPlayerForExport("Opp2", 2, Decimal("1000"), Decimal("999"), False),
+        "Opp3": MockPlayerForExport("Opp3", 3, Decimal("1000"), Decimal("999"), False),
+        "Opp4": MockPlayerForExport("Opp4", 4, Decimal("1000"), Decimal("1000"), False),
+        "Opp5": MockPlayerForExport("Opp5", 5, Decimal("1000"), Decimal("1000"), False),
     }
 
-    # Log inicial garantido (Os blinds obrigatórios que a FSM já saberia)
     action_log = [
         ActionLogEntry(player_id="Opp1", action="post", amount=Decimal("0.5"), street="preflop"),
         ActionLogEntry(player_id="Opp2", action="post", amount=Decimal("1"), street="preflop"),
     ]
 
-    # ------------------------------------------------------------------------
-    # PASSO 2: Preparando o TableContext para o Inferencer
-    # ------------------------------------------------------------------------
-    print("\n Passo 2: Preparando o TableContext (FSM State)...")
-
-    # Este contexto simula o estado da mesa logo APÓS os blinds serem postados,
-    # aguardando as ações dos oponentes até chegar no Hero.
     ctx = TableContext(
         street="preflop",
         pot=Decimal("1.5"),
@@ -145,78 +90,61 @@ def demo_command(args: argparse.Namespace) -> None:
         active_players=["Hero", "Opp1", "Opp2", "Opp3", "Opp4", "Opp5"],
         seat_order=["Hero", "Opp1", "Opp2", "Opp3", "Opp4", "Opp5"],
         hero_id="Hero",
-        turn_pointer="Opp3",  # Ação começa no UTG (Opp3)
-        action_order=("Opp3", "Opp4", "Opp5", "Hero", "Opp1", "Opp2"),
+        turn_pointer="Opp3",
+        action_order=("Opp3", "Opp4", "Opp5", "Hero", "Opp1", "Opp2")
     )
 
     # ------------------------------------------------------------------------
-    # PASSO 3: Criando os Anchors e Rodando o Inferencer (O Motor do TCC)
+    # PASSO 3: Rodando Inferencer DFS (YOLO Delta)
     # ------------------------------------------------------------------------
-    print("\n Passo 3: YOLO detectou variação de Pote. Rodando Inferencer DFS...")
+    start_anchor = AnchorEvent(AnchorType.STREET_START, 0.0, "preflop", Decimal("1.5"), Decimal("1.5"))
+    end_anchor = AnchorEvent(AnchorType.HERO_ACTION, 12.5, "preflop", Decimal("4.5"), Decimal("4.5"))
 
-    # Evento 1: Abertura da janela (Logo após os blinds)
-    start_anchor = AnchorEvent(
-        anchor_type=AnchorType.STREET_START,
-        timestamp=0.0,
-        street="preflop",
-        pot_before=Decimal("1.5"),
-        pot_after=Decimal("1.5"),
-    )
-
-    # Evento 2: Fechamento da janela (YOLO viu que é a vez do Hero e o pote subiu!)
-    # Vamos simular que o pote foi de 1.5 para 4.5 (Delta de 3.0)
-    end_anchor = AnchorEvent(
-        anchor_type=AnchorType.HERO_ACTION,
-        timestamp=12.5,
-        street="preflop",
-        pot_before=Decimal("4.5"),
-        pot_after=Decimal("4.5"),
-    )
-
-    inferencer = OpponentActionInferencer(InferencerConfig())
-    inferencer.reset()
-
-    # Abrindo a janela
+    inferencer = OpponentActionInferencer(InferencerConfig(all_in_contribution_multiplier=Decimal("5")))
     inferencer.on_anchor(start_anchor, ctx)
-
-    # Fechando a janela e recebendo as ações deduzidas pela DFS
     inferred_actions = inferencer.on_anchor(end_anchor, ctx)
 
+    # Injetando as ações deduzidas (Posições 2, 3 e 4 do log)
+    for ia in inferred_actions:
+        action_log.append(ActionLogEntry(player_id=ia.player_id, action=ia.action, amount=ia.amount, street="preflop"))
+
+    action_log.append(ActionLogEntry(player_id="Hero", action="call", amount=Decimal("1"), street="preflop"))
+
+    # ========================================================================
+    # LÓGICA DE TOGGLE: STRICT vs CALIBRATED
+    # ========================================================================
     ambiguous_windows = []
 
     if args.strategy == "calibrated":
-        print("    Cálculo de EV calibrado: Exportando pesos e incertezas da DFS.")
-
+        print("    Modo [CALIBRATED EV] ativo: Exportando Pesos e Cenários Alternativos da DFS...")
         hand_id_demo = "DEMO_CALIBRATED_001"
 
-        attr = WindowAttribution(
+        # Cenário Matemático Alternativo: Em vez de Raise/Fold/Fold, a DFS acha que
+        # existe 30% de chance do YOLO ter perdido frames e na verdade foram 3 Calls.
+        alt_actions = [
+            ActionLogEntry(player_id="Opp3", action="call", amount=Decimal("1"), street="preflop"),
+            ActionLogEntry(player_id="Opp4", action="call", amount=Decimal("1"), street="preflop"),
+            ActionLogEntry(player_id="Opp5", action="call", amount=Decimal("1"), street="preflop"),
+        ]
+
+        attr = MockWindowAttribution(
             primary=inferred_actions,
-            alternatives=[inferred_actions],
-            weights=[0.53]
+            alternatives=[alt_actions],
+            weights=[0.70, 0.30] # 70% Primary, 30% Alternative
         )
 
         ambig_ref = MockAmbiguousWindowRef(
-            window_id="w_demo_1",
+            window_id="w_demo_incerteza",
             street="preflop",
-            log_positions=[2,3,4],
+            log_positions=[2, 3, 4], # As posições do Raise/Fold/Fold no action_log
             attribution=attr
         )
         ambiguous_windows.append(ambig_ref)
 
     else:
-        print("    Calculo de EV estrito: Ocultando a ambiguidade.")
+        print("    Modo [STRICT EV] ativo: Ocultando a ambiguidade. Simulando visão ingênua...")
         hand_id_demo = "DEMO_STRICT_001"
 
-    print(f"    Delta de Pote percebido: ${end_anchor.pot_before - start_anchor.pot_after}")
-    print(f"    O motor gerou {len(inferred_actions)} ações inferidas:")
-
-    for ia in inferred_actions:
-        print(f"      -> {ia.player_id} deu {ia.action.upper()} de ${ia.amount} (Confiança: {ia.confidence:.2f})")
-        # Injetamos a ação gerada pelo seu algoritmo real de volta no log!
-        action_log.append(ActionLogEntry(player_id=ia.player_id, action=ia.action, amount=ia.amount, street="preflop"))
-
-    # Adicionando a ação do Hero para fechar o mock
-    action_log.append(ActionLogEntry(player_id="Hero", action="call", amount=Decimal("1"), street="preflop"))
 
     # ------------------------------------------------------------------------
     # PASSO 4: Exportação JSON
@@ -229,29 +157,24 @@ def demo_command(args: argparse.Namespace) -> None:
         blinds=(Decimal("0.5"), Decimal("1")),
         players=players_dict,
         action_log=action_log,
-        pot_final=Decimal("5.5"),  # Total do preflop mockado
+        pot_final=Decimal("5.5"),
         board_final=(),
-        ambiguous_windows=ambiguous_windows
     )
 
-    meta = HandMetadata(
-        hand_id=hand_id_demo, table_id="table_TCC", timestamp_start=datetime.now(), timestamp_end=datetime.now()
-    )
-
+    meta = HandMetadata(hand_id=hand_id_demo, table_id="table_TCC", timestamp_start=datetime.now(), timestamp_end=datetime.now())
     winners = [WinnerInfo(player_id="Hero", amount_won=Decimal("5.5"), hand_description="Preflop Take")]
-
-    export_inputs = ExportInputs(hand=mock_hand_state, metadata=meta, winners=winners)
 
     try:
         exporter = HandHistoryExporter(config=ExporterConfig(minor_unit_scale=100))
-        json_payload = exporter.export(export_inputs)
-        json_str = json.dumps(json_payload, indent=2)
+        json_payload = exporter.export(ExportInputs(hand=mock_hand_state,
+                                                    metadata=meta,
+                                                    winners=winners,
+                                                    ambiguous_windows=ambiguous_windows))
 
         export_path = Path("demo_inference_export.json")
-        with open(export_path, "w") as f:
-            f.write(json_str)
-
-        print(f"    JSON gerado com sucesso ({len(json_str) / 1024:.1f} KB). Salvo em {export_path}")
+        with open(export_path, 'w') as f:
+            f.write(json.dumps(json_payload, indent=2))
+        print(f"    JSON salvo em {export_path}")
 
     except Exception as e:
         print(f"    ERRO durante a exportação: {e}")
@@ -264,27 +187,21 @@ def demo_command(args: argparse.Namespace) -> None:
     java_endpoint = getattr(args, "java_endpoint", "http://localhost:8080/api/v1/hands")
 
     try:
-        response = requests.post(
-            java_endpoint, json=json_payload, headers={"Content-Type": "application/json"}, timeout=10
-        )
+        response = requests.post(java_endpoint, json=json_payload, headers={"Content-Type": "application/json"}, timeout=10)
         if response.status_code in [200, 201]:
-            print(f"    ✅ Sucesso ({response.status_code}")
+            print(f"    ✅ Sucesso ({response.status_code})! Mão salva no banco.")
+            # Tratamento atualizado para prevenir o "Expecting Value" de respostas vazias
             try:
-                print(f"   Retorno do servidor: {response.json()}")
-            except requests.exceptions.JSONDecodeError:
-                print(f"   (O servidor salvou com sucesso e retornou um corpo vazio).")
+                print(f"    Resposta: {response.json()}")
+            except ValueError:
+                pass
         else:
             print(f"    ⚠️ Erro HTTP {response.status_code}: {response.text}")
     except Exception as e:
         print(f"    ⚠️ Backend Java não alcançado: {e}")
 
-    print("\n" + "=" * 70)
-    print(" DEMO COMPLETA ")
-    print("=" * 70 + "\n")
-
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Poker Vision Demo (With Inference)")
+    parser = argparse.ArgumentParser(description="Poker Vision Demo")
     parser.add_argument("--java-endpoint", type=str, default="http://localhost:8080/api/v1/hands")
     parser.add_argument(
         "--strategy",
